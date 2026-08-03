@@ -1,0 +1,316 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"sync/atomic"
+	"testing"
+
+	"github.com/jahrulnr/searchwire"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+)
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return fn(req)
+}
+
+func fixturePath(name string) string {
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		panic("runtime.Caller failed")
+	}
+	return filepath.Join(filepath.Dir(file), "..", "..", "testdata", name)
+}
+
+func readFixture(t *testing.T, name string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(fixturePath(name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func fixtureClient(t *testing.T) *http.Client {
+	t.Helper()
+	brave := readFixture(t, "brave-results.html")
+	startpage := readFixture(t, "startpage-results.html")
+	wikipedia := readFixture(t, "wikipedia-results.json")
+	repos := readFixture(t, "github-repos.json")
+	issues := readFixture(t, "github-issues.json")
+
+	return &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		host := r.URL.Host
+		path := r.URL.Path
+		switch {
+		case strings.Contains(host, "search.brave.com"):
+			return okHTML(brave), nil
+		case strings.Contains(host, "startpage.com"):
+			return okHTML(startpage), nil
+		case strings.Contains(host, "wikipedia.org"):
+			return okJSON(wikipedia), nil
+		case strings.Contains(host, "api.github.com") && strings.Contains(path, "/search/repositories"):
+			return okJSON(repos), nil
+		case strings.Contains(host, "api.github.com") && strings.Contains(path, "/search/issues"):
+			return okJSON(issues), nil
+		default:
+			return &http.Response{
+				StatusCode: http.StatusNotFound,
+				Status:     "404 Not Found",
+				Header:     http.Header{"Content-Type": []string{"text/plain"}},
+				Body:       io.NopCloser(strings.NewReader("unknown host")),
+			}, nil
+		}
+	})}
+}
+
+func failingClient() *http.Client {
+	return &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusInternalServerError,
+			Status:     "500 Internal Server Error",
+			Header:     http.Header{"Content-Type": []string{"text/plain"}},
+			Body:       io.NopCloser(strings.NewReader(strings.Repeat("x", 500))),
+		}, nil
+	})}
+}
+
+func okHTML(body []byte) *http.Response {
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Status:     "200 OK",
+		Header:     http.Header{"Content-Type": []string{"text/html; charset=utf-8"}},
+		Body:       io.NopCloser(strings.NewReader(string(body))),
+	}
+}
+
+func okJSON(body []byte) *http.Response {
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Status:     "200 OK",
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(string(body))),
+	}
+}
+
+func TestSearchHappyPath(t *testing.T) {
+	cfg := searchwire.Config{HTTPClient: fixtureClient(t)}
+	out, err := runSearch(context.Background(), cfg, searchInput{Query: "Go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Query != "Go" {
+		t.Fatalf("query = %q", out.Query)
+	}
+	if len(out.Results) == 0 {
+		t.Fatalf("expected results, got %#v", out)
+	}
+
+	handler := makeSearchHandler(cfg)
+	result, structured, err := handler(context.Background(), nil, searchInput{Query: "Go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result != nil && result.IsError {
+		t.Fatalf("unexpected tool error: %#v", result)
+	}
+	if len(structured.Results) == 0 {
+		t.Fatalf("structured results empty: %#v", structured)
+	}
+	if result == nil || len(result.Content) == 0 {
+		t.Fatal("expected text content fallback")
+	}
+	text, ok := result.Content[0].(*mcp.TextContent)
+	if !ok || !strings.Contains(text.Text, `"results"`) {
+		t.Fatalf("text fallback = %#v", result.Content[0])
+	}
+	var decoded searchOutput
+	if err := json.Unmarshal([]byte(text.Text), &decoded); err != nil {
+		t.Fatalf("text fallback JSON: %v", err)
+	}
+	if len(decoded.Results) == 0 {
+		t.Fatal("decoded text fallback missing results")
+	}
+}
+
+func TestSearchEmptyQuery(t *testing.T) {
+	cfg := searchwire.Config{HTTPClient: fixtureClient(t)}
+	_, err := runSearch(context.Background(), cfg, searchInput{Query: "   "})
+	if !errors.Is(err, searchwire.ErrEmptyQuery) && !strings.Contains(err.Error(), "query is required") {
+		t.Fatalf("err = %v", err)
+	}
+
+	handler := makeSearchHandler(cfg)
+	result, _, err := handler(context.Background(), nil, searchInput{Query: ""})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result == nil || !result.IsError {
+		t.Fatalf("expected IsError result, got %#v", result)
+	}
+}
+
+func TestSearchAllSourcesFail(t *testing.T) {
+	cfg := searchwire.Config{HTTPClient: failingClient()}
+	_, err := runSearch(context.Background(), cfg, searchInput{Query: "Go"})
+	var searchErr *searchwire.SearchError
+	if !errors.As(err, &searchErr) {
+		t.Fatalf("err = %v", err)
+	}
+	if len(searchErr.Failures) == 0 {
+		t.Fatal("expected failures")
+	}
+	for _, f := range searchErr.Failures {
+		if len(f.Error) > maxErrorLen+8 {
+			t.Fatalf("error not truncated: %q", f.Error)
+		}
+		if strings.Contains(f.Error, strings.Repeat("x", 300)) {
+			t.Fatalf("response body leaked: %q", f.Error)
+		}
+	}
+
+	handler := makeSearchHandler(cfg)
+	result, _, err := handler(context.Background(), nil, searchInput{Query: "Go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result == nil || !result.IsError {
+		t.Fatalf("expected IsError result, got %#v", result)
+	}
+}
+
+func TestSearchLimitOverride(t *testing.T) {
+	var sawLimit atomic.Bool
+	client := &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		q := r.URL.Query()
+		if lim := q.Get("gsrlimit"); lim == "2" {
+			sawLimit.Store(true)
+		}
+		if lim := q.Get("per_page"); lim == "2" {
+			sawLimit.Store(true)
+		}
+		host := r.URL.Host
+		switch {
+		case strings.Contains(host, "search.brave.com"):
+			return okHTML(readFixture(t, "brave-results.html")), nil
+		case strings.Contains(host, "startpage.com"):
+			return okHTML(readFixture(t, "startpage-results.html")), nil
+		case strings.Contains(host, "wikipedia.org"):
+			return okJSON(readFixture(t, "wikipedia-results.json")), nil
+		case strings.Contains(host, "api.github.com"):
+			return okJSON([]byte(`{"items":[]}`)), nil
+		default:
+			return &http.Response{
+				StatusCode: http.StatusNotFound,
+				Body:       io.NopCloser(strings.NewReader("missing")),
+				Header:     http.Header{"Content-Type": []string{"text/plain"}},
+			}, nil
+		}
+	})}
+
+	limit := 2
+	out, err := runSearch(context.Background(), searchwire.Config{HTTPClient: client, Limit: 10}, searchInput{
+		Query: "Go",
+		Limit: &limit,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sawLimit.Load() {
+		t.Fatal("limit override was not observed on source requests")
+	}
+	if len(out.Results) > 2 {
+		t.Fatalf("results = %d, want <= 2", len(out.Results))
+	}
+}
+
+func TestTokenNeverAppearsInOutput(t *testing.T) {
+	const secret = "ghp_secret_token_do_not_leak"
+	t.Setenv("GITHUB_TOKEN", secret)
+
+	client := &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		auth := r.Header.Get("Authorization")
+		body := "unauthorized: " + secret + " and " + auth
+		return &http.Response{
+			StatusCode: http.StatusUnauthorized,
+			Status:     "401 Unauthorized",
+			Header:     http.Header{"Content-Type": []string{"text/plain"}},
+			Body:       io.NopCloser(strings.NewReader(body)),
+		}, nil
+	})}
+
+	cfg := searchwire.Config{HTTPClient: client}
+	_, err := runSearch(context.Background(), cfg, searchInput{Query: "Go"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("token leaked in error: %v", err)
+	}
+
+	handler := makeSearchHandler(cfg)
+	result, out, err := handler(context.Background(), nil, searchInput{Query: "Go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	blob, _ := json.Marshal(out)
+	if strings.Contains(string(blob), secret) {
+		t.Fatalf("token leaked in structured output: %s", blob)
+	}
+	if result != nil {
+		for _, c := range result.Content {
+			if text, ok := c.(*mcp.TextContent); ok && strings.Contains(text.Text, secret) {
+				t.Fatalf("token leaked in tool content: %s", text.Text)
+			}
+		}
+	}
+
+	// Partial-failure path: one source succeeds, others include secret in body.
+	mixed := &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		if strings.Contains(r.URL.Host, "wikipedia.org") {
+			return okJSON(readFixture(t, "wikipedia-results.json")), nil
+		}
+		return &http.Response{
+			StatusCode: http.StatusForbidden,
+			Status:     "403 Forbidden",
+			Header:     http.Header{"Content-Type": []string{"text/plain"}},
+			Body:       io.NopCloser(strings.NewReader("denied for " + secret)),
+		}, nil
+	})}
+	out, err = runSearch(context.Background(), searchwire.Config{HTTPClient: mixed}, searchInput{Query: "Go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	blob, _ = json.Marshal(out)
+	if strings.Contains(string(blob), secret) {
+		t.Fatalf("token leaked in partial failure output: %s", blob)
+	}
+}
+
+func TestConfigFromEnv(t *testing.T) {
+	t.Setenv(envLimit, "3")
+	t.Setenv(envTimeout, "2s")
+	cfg := configFromEnv()
+	if cfg.Limit != 3 {
+		t.Fatalf("limit = %d", cfg.Limit)
+	}
+	if cfg.Timeout.String() != "2s" {
+		t.Fatalf("timeout = %v", cfg.Timeout)
+	}
+}
+
+func TestNewServerRegistersTool(t *testing.T) {
+	server := newServer(searchwire.Config{HTTPClient: fixtureClient(t)})
+	if server == nil {
+		t.Fatal("nil server")
+	}
+}

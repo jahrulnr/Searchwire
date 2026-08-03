@@ -1,6 +1,6 @@
 # searchwire
 
-Zero-config Go metasearch runtime for agent tooling.
+Zero-config Go metasearch for agent tooling - usable as a Go library or an MCP stdio server.
 
 Searchwire runs ordinary web/text searches for you. Provide a query only — no SearXNG deployment, search host, engine selection, or API key is required for the default path.
 
@@ -39,6 +39,38 @@ func main() {
 ```
 
 `searchwire.New(searchwire.Config{})` and `searchwire.New(searchwire.DefaultConfig())` are equivalent.
+
+## MCP Server
+
+Install the stdio adapter:
+
+```bash
+go install github.com/jahrulnr/searchwire/cmd/searchwire-mcp@latest
+```
+
+Run it as an MCP stdio server (stdout is reserved for the MCP protocol; logs go to stderr):
+
+```bash
+searchwire-mcp
+```
+
+### Tool
+
+| Name | Input | Output |
+|------|-------|--------|
+| `searchwire_search` | `{ "query": string, "limit"?: number }` | Searchwire response JSON (`query`, `results`, `errors`) |
+
+### Environment
+
+| Variable | Scope | Description |
+|----------|-------|-------------|
+| `GITHUB_TOKEN` | library | Optional GitHub API token (higher rate limits) |
+| `SEARCHWIRE_LIMIT` | adapter | Default result limit (int; unset = library default) |
+| `SEARCHWIRE_TIMEOUT` | adapter | HTTP client timeout as a Go duration string (e.g. `10s`; unset = library default) |
+
+Latency: the adapter fans out across 4 sources and may take up to the configured timeout (default 10s).
+
+NusaShell can consume this as an external stdio MCP server via manual config; no bundled plugin is shipped.
 
 ## Built-in sources
 
@@ -103,8 +135,10 @@ When at least one source succeeds, `Search` returns a `*Response` with merged re
 ## Development
 
 ```bash
-gofmt -w *.go
+gofmt -w *.go cmd/searchwire-mcp/*.go
 go mod tidy
+go build ./cmd/searchwire-mcp
+go install github.com/jahrulnr/searchwire/cmd/searchwire-mcp@latest
 go test ./...
 go test -race ./...
 go vet ./...
