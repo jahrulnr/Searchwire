@@ -19,16 +19,22 @@ import (
 )
 
 const (
-	serverName      = "searchwire"
-	fallbackVersion = "0.1.0"
-	toolName        = "searchwire_search"
-	maxErrorLen     = 240
-	envLimit        = "SEARCHWIRE_LIMIT"
-	envTimeout      = "SEARCHWIRE_TIMEOUT"
-	envGitHubToken  = "GITHUB_TOKEN"
-	toolDescription = "Metasearch the open web across Brave, Startpage, Wikipedia, and GitHub. " +
+	serverName        = "searchwire"
+	fallbackVersion   = "0.1.0"
+	searchToolName    = "searchwire_search"
+	fetchToolName     = "searchwire_fetch"
+	maxErrorLen       = 240
+	envLimit          = "SEARCHWIRE_LIMIT"
+	envTimeout        = "SEARCHWIRE_TIMEOUT"
+	envMaxBytes       = "SEARCHWIRE_MAX_BYTES"
+	envGitHubToken    = "GITHUB_TOKEN"
+	searchDescription = "Metasearch the open web across Brave, Startpage, Wikipedia, and GitHub. " +
 		"Returns ranked results with partial failure reporting when some sources fail. " +
-		"May take up to ~10s (or SEARCHWIRE_TIMEOUT) because sources are queried concurrently."
+		"May take up to ~10s (or SEARCHWIRE_TIMEOUT) because sources are queried concurrently. " +
+		"After searching, use searchwire_fetch on promising URLs for full page text."
+	fetchDescription = "Fetch one http(s) URL and return readable text (HTML stripped to title + visible text, " +
+		"or plain text as-is). Prefer searchwire_search first, then fetch promising result URLs. " +
+		"Not a full browser: no JavaScript rendering. Oversized bodies are truncated with truncated=true."
 )
 
 type searchInput struct {
@@ -42,6 +48,22 @@ type searchOutput struct {
 	Errors  []searchwire.SourceError `json:"errors,omitempty"`
 }
 
+type fetchInput struct {
+	URL      string `json:"url" jsonschema:"absolute http or https URL to fetch"`
+	MaxBytes *int64 `json:"max_bytes,omitempty" jsonschema:"optional max response bytes; capped by adapter/library limit"`
+}
+
+type fetchOutput struct {
+	URL         string `json:"url"`
+	FinalURL    string `json:"finalUrl,omitempty"`
+	StatusCode  int    `json:"statusCode"`
+	ContentType string `json:"contentType,omitempty"`
+	Title       string `json:"title,omitempty"`
+	Text        string `json:"text"`
+	Truncated   bool   `json:"truncated"`
+	Bytes       int    `json:"bytes"`
+}
+
 func main() {
 	log.SetOutput(os.Stderr)
 	log.SetFlags(0)
@@ -49,22 +71,26 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	cfg := configFromEnv()
-	server := newServer(cfg)
+	cfg, maxBytes := configFromEnv()
+	server := newServer(cfg, maxBytes)
 	if err := server.Run(ctx, &mcp.StdioTransport{}); err != nil && !errors.Is(err, context.Canceled) {
 		log.Fatalf("searchwire-mcp: %v", err)
 	}
 }
 
-func newServer(cfg searchwire.Config) *mcp.Server {
+func newServer(cfg searchwire.Config, defaultMaxBytes int64) *mcp.Server {
 	server := mcp.NewServer(&mcp.Implementation{
 		Name:    serverName,
 		Version: moduleVersion(),
 	}, nil)
 	mcp.AddTool(server, &mcp.Tool{
-		Name:        toolName,
-		Description: toolDescription,
+		Name:        searchToolName,
+		Description: searchDescription,
 	}, makeSearchHandler(cfg))
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        fetchToolName,
+		Description: fetchDescription,
+	}, makeFetchHandler(cfg, defaultMaxBytes))
 	return server
 }
 
@@ -87,6 +113,25 @@ func makeSearchHandler(base searchwire.Config) mcp.ToolHandlerFor[searchInput, s
 	}
 }
 
+func makeFetchHandler(base searchwire.Config, defaultMaxBytes int64) mcp.ToolHandlerFor[fetchInput, fetchOutput] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, input fetchInput) (*mcp.CallToolResult, fetchOutput, error) {
+		out, err := runFetch(ctx, base, defaultMaxBytes, input)
+		if err != nil {
+			return &mcp.CallToolResult{
+				IsError: true,
+				Content: []mcp.Content{&mcp.TextContent{Text: sanitizeError(err.Error())}},
+			}, fetchOutput{}, nil
+		}
+		text, marshalErr := json.MarshalIndent(out, "", "  ")
+		if marshalErr != nil {
+			return nil, out, nil
+		}
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: string(text)}},
+		}, out, nil
+	}
+}
+
 func runSearch(ctx context.Context, base searchwire.Config, input searchInput) (searchOutput, error) {
 	cfg := base
 	if input.Limit != nil && *input.Limit > 0 {
@@ -97,15 +142,42 @@ func runSearch(ctx context.Context, base searchwire.Config, input searchInput) (
 	if err != nil {
 		return searchOutput{}, sanitizeSearchErr(err)
 	}
-	return sanitizeOutput(searchOutput{
+	return sanitizeSearchOutput(searchOutput{
 		Query:   resp.Query,
 		Results: resp.Results,
 		Errors:  resp.Errors,
 	}), nil
 }
 
-func configFromEnv() searchwire.Config {
+func runFetch(ctx context.Context, base searchwire.Config, defaultMaxBytes int64, input fetchInput) (fetchOutput, error) {
+	cfg := base
+	limit := defaultMaxBytes
+	if input.MaxBytes != nil && *input.MaxBytes > 0 {
+		limit = *input.MaxBytes
+		if cfg.MaxResponseBytes > 0 && limit > cfg.MaxResponseBytes {
+			limit = cfg.MaxResponseBytes
+		}
+	}
+
+	result, err := searchwire.New(cfg).FetchWithLimit(ctx, input.URL, limit)
+	if err != nil {
+		return fetchOutput{}, sanitizeFetchErr(err)
+	}
+	return fetchOutput{
+		URL:         result.URL,
+		FinalURL:    result.FinalURL,
+		StatusCode:  result.StatusCode,
+		ContentType: result.ContentType,
+		Title:       result.Title,
+		Text:        result.Text,
+		Truncated:   result.Truncated,
+		Bytes:       result.Bytes,
+	}, nil
+}
+
+func configFromEnv() (searchwire.Config, int64) {
 	cfg := searchwire.Config{}
+	var maxBytes int64
 	if raw := strings.TrimSpace(os.Getenv(envLimit)); raw != "" {
 		n, err := strconv.Atoi(raw)
 		if err != nil || n < 0 {
@@ -122,7 +194,16 @@ func configFromEnv() searchwire.Config {
 			cfg.Timeout = d
 		}
 	}
-	return cfg
+	if raw := strings.TrimSpace(os.Getenv(envMaxBytes)); raw != "" {
+		n, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || n < 0 {
+			log.Printf("searchwire-mcp: ignoring invalid %s=%q", envMaxBytes, raw)
+		} else if n > 0 {
+			cfg.MaxResponseBytes = n
+			maxBytes = n
+		}
+	}
+	return cfg, maxBytes
 }
 
 func moduleVersion() string {
@@ -167,18 +248,41 @@ func sanitizeSearchErr(err error) error {
 	return errors.New(sanitizeError(err.Error()))
 }
 
-func sanitizeOutput(out searchOutput) searchOutput {
+func sanitizeFetchErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	switch {
+	case errors.Is(err, searchwire.ErrEmptyURL),
+		errors.Is(err, searchwire.ErrInvalidURL),
+		errors.Is(err, searchwire.ErrUnsupportedScheme),
+		errors.Is(err, searchwire.ErrNilSearcher),
+		errors.Is(err, searchwire.ErrUnexpectedContentType):
+		return err
+	}
+	var httpErr *searchwire.HTTPError
+	if errors.As(err, &httpErr) {
+		return &searchwire.HTTPError{
+			StatusCode: httpErr.StatusCode,
+			Status:     httpErr.Status,
+			Body:       sanitizeError(httpErr.Body),
+		}
+	}
+	return errors.New(sanitizeError(err.Error()))
+}
+
+func sanitizeSearchOutput(out searchOutput) searchOutput {
 	if len(out.Errors) == 0 {
 		return out
 	}
-	errors := make([]searchwire.SourceError, len(out.Errors))
+	errs := make([]searchwire.SourceError, len(out.Errors))
 	for i, e := range out.Errors {
-		errors[i] = searchwire.SourceError{
+		errs[i] = searchwire.SourceError{
 			Source: e.Source,
 			Error:  sanitizeError(e.Error),
 		}
 	}
-	out.Errors = errors
+	out.Errors = errs
 	return out
 }
 

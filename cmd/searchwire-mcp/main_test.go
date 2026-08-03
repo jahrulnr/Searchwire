@@ -299,18 +299,155 @@ func TestTokenNeverAppearsInOutput(t *testing.T) {
 func TestConfigFromEnv(t *testing.T) {
 	t.Setenv(envLimit, "3")
 	t.Setenv(envTimeout, "2s")
-	cfg := configFromEnv()
+	t.Setenv(envMaxBytes, "4096")
+	cfg, maxBytes := configFromEnv()
 	if cfg.Limit != 3 {
 		t.Fatalf("limit = %d", cfg.Limit)
 	}
 	if cfg.Timeout.String() != "2s" {
 		t.Fatalf("timeout = %v", cfg.Timeout)
 	}
+	if cfg.MaxResponseBytes != 4096 || maxBytes != 4096 {
+		t.Fatalf("max bytes cfg=%d adapter=%d", cfg.MaxResponseBytes, maxBytes)
+	}
 }
 
-func TestNewServerRegistersTool(t *testing.T) {
-	server := newServer(searchwire.Config{HTTPClient: fixtureClient(t)})
+func TestNewServerRegistersTools(t *testing.T) {
+	server := newServer(searchwire.Config{HTTPClient: fixtureClient(t)}, 0)
 	if server == nil {
 		t.Fatal("nil server")
+	}
+}
+
+func TestFetchHappyHTML(t *testing.T) {
+	client := &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		body := `<html><head><title>Fetched</title></head><body><p>Hello fetch</p></body></html>`
+		return &http.Response{
+			StatusCode: 200,
+			Status:     "200 OK",
+			Header:     http.Header{"Content-Type": []string{"text/html"}},
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    r,
+		}, nil
+	})}
+	cfg := searchwire.Config{HTTPClient: client}
+	out, err := runFetch(context.Background(), cfg, 0, fetchInput{URL: "https://example.com/page"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Title != "Fetched" || !strings.Contains(out.Text, "Hello fetch") {
+		t.Fatalf("out = %#v", out)
+	}
+
+	handler := makeFetchHandler(cfg, 0)
+	result, structured, err := handler(context.Background(), nil, fetchInput{URL: "https://example.com/page"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result != nil && result.IsError {
+		t.Fatalf("unexpected error %#v", result)
+	}
+	if structured.Title != "Fetched" {
+		t.Fatalf("structured = %#v", structured)
+	}
+}
+
+func TestFetchPlainText(t *testing.T) {
+	client := &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: 200,
+			Status:     "200 OK",
+			Header:     http.Header{"Content-Type": []string{"text/plain"}},
+			Body:       io.NopCloser(strings.NewReader("plain body")),
+			Request:    r,
+		}, nil
+	})}
+	out, err := runFetch(context.Background(), searchwire.Config{HTTPClient: client}, 0, fetchInput{URL: "https://example.com/a.txt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Text != "plain body" {
+		t.Fatalf("text = %q", out.Text)
+	}
+}
+
+func TestFetchBadScheme(t *testing.T) {
+	handler := makeFetchHandler(searchwire.Config{}, 0)
+	result, _, err := handler(context.Background(), nil, fetchInput{URL: "ftp://example.com/x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result == nil || !result.IsError {
+		t.Fatalf("expected IsError, got %#v", result)
+	}
+}
+
+func TestFetchHTTPError(t *testing.T) {
+	client := &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: 500,
+			Status:     "500 Internal Server Error",
+			Header:     http.Header{"Content-Type": []string{"text/plain"}},
+			Body:       io.NopCloser(strings.NewReader("boom")),
+			Request:    r,
+		}, nil
+	})}
+	handler := makeFetchHandler(searchwire.Config{HTTPClient: client}, 0)
+	result, _, err := handler(context.Background(), nil, fetchInput{URL: "https://example.com/err"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result == nil || !result.IsError {
+		t.Fatalf("expected IsError, got %#v", result)
+	}
+}
+
+func TestFetchMaxBytesTruncate(t *testing.T) {
+	client := &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: 200,
+			Status:     "200 OK",
+			Header:     http.Header{"Content-Type": []string{"text/plain"}},
+			Body:       io.NopCloser(strings.NewReader(strings.Repeat("z", 100))),
+			Request:    r,
+		}, nil
+	})}
+	max := int64(20)
+	out, err := runFetch(context.Background(), searchwire.Config{HTTPClient: client, MaxResponseBytes: 1000}, 0, fetchInput{
+		URL:      "https://example.com/big",
+		MaxBytes: &max,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !out.Truncated || out.Bytes != 20 {
+		t.Fatalf("out = %#v", out)
+	}
+}
+
+func TestFetchTokenNeverInOutput(t *testing.T) {
+	const secret = "ghp_fetch_secret_token"
+	t.Setenv("GITHUB_TOKEN", secret)
+	client := &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: 401,
+			Status:     "401 Unauthorized",
+			Header:     http.Header{"Content-Type": []string{"text/plain"}},
+			Body:       io.NopCloser(strings.NewReader("denied " + secret)),
+			Request:    r,
+		}, nil
+	})}
+	handler := makeFetchHandler(searchwire.Config{HTTPClient: client}, 0)
+	result, _, err := handler(context.Background(), nil, fetchInput{URL: "https://example.com/sec"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result == nil || !result.IsError {
+		t.Fatalf("expected error %#v", result)
+	}
+	for _, c := range result.Content {
+		if text, ok := c.(*mcp.TextContent); ok && strings.Contains(text.Text, secret) {
+			t.Fatalf("token leaked: %s", text.Text)
+		}
 	}
 }

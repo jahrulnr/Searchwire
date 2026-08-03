@@ -1,16 +1,14 @@
 # searchwire
 
-Zero-config Go metasearch for agent tooling - usable as a Go library or an MCP stdio server.
+Zero-config Go metasearch for agent tooling — usable as a **Go library** or an **MCP stdio server**.
 
-Searchwire runs ordinary web/text searches for you. Provide a query only — no SearXNG deployment, search host, engine selection, or API key is required for the default path.
+Searchwire runs ordinary web/text searches for you. Provide a query only — no SearXNG deployment, search host, engine selection, or API key is required for the default path. After searching, callers can **fetch** a result URL for readable page text (HTML stripped / plain text).
 
-## Install
+## Library
 
 ```bash
 go get github.com/jahrulnr/searchwire
 ```
-
-## Usage
 
 ```go
 package main
@@ -35,10 +33,34 @@ func main() {
 	for _, sourceErr := range resp.Errors {
 		log.Printf("source %s failed: %s", sourceErr.Source, sourceErr.Error)
 	}
+
+	if len(resp.Results) > 0 {
+		page, err := searcher.Fetch(context.Background(), resp.Results[0].URL)
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println(page.Title, page.Truncated, len(page.Text))
+	}
 }
 ```
 
 `searchwire.New(searchwire.Config{})` and `searchwire.New(searchwire.DefaultConfig())` are equivalent.
+
+### Fetch
+
+`Searcher.Fetch(ctx, url)` / `FetchWithLimit(ctx, url, maxBytes)` perform a single HTTP GET:
+
+| Field | Meaning |
+|-------|---------|
+| `URL` / `FinalURL` | Requested URL and post-redirect URL |
+| `StatusCode` / `ContentType` | Response metadata |
+| `Title` / `Text` | Page title (HTML) and readable text |
+| `Truncated` / `Bytes` | Whether the body was capped; bytes read |
+
+- Schemes: `http` / `https` only.
+- Accepts `text/html`, `application/xhtml+xml`, `text/plain`, and other `text/*`.
+- HTML → title + visible text (scripts/styles stripped). Oversized bodies truncate with `Truncated: true` instead of hard-failing.
+- Local agent helper only: no JS rendering, no cookie jar, no multi-tenant SSRF suite. Loopback/private hosts are allowed for local-dev agent use.
 
 ## MCP Server
 
@@ -54,11 +76,14 @@ Run it as an MCP stdio server (stdout is reserved for the MCP protocol; logs go 
 searchwire-mcp
 ```
 
-### Tool
+### Tools
 
 | Name | Input | Output |
 |------|-------|--------|
 | `searchwire_search` | `{ "query": string, "limit"?: number }` | Searchwire response JSON (`query`, `results`, `errors`) |
+| `searchwire_fetch` | `{ "url": string, "max_bytes"?: number }` | Page JSON (`url`, `finalUrl`, `statusCode`, `contentType`, `title`, `text`, `truncated`, `bytes`) |
+
+Recommended agent workflow: **`searchwire_search` → pick URLs → `searchwire_fetch`**. Snippets alone are incomplete; fetch promising hits for full content.
 
 ### Environment
 
@@ -67,10 +92,25 @@ searchwire-mcp
 | `GITHUB_TOKEN` | library | Optional GitHub API token (higher rate limits) |
 | `SEARCHWIRE_LIMIT` | adapter | Default result limit (int; unset = library default) |
 | `SEARCHWIRE_TIMEOUT` | adapter | HTTP client timeout as a Go duration string (e.g. `10s`; unset = library default) |
+| `SEARCHWIRE_MAX_BYTES` | adapter | Default fetch/response byte budget (unset = library default) |
 
-Latency: the adapter fans out across 4 sources and may take up to the configured timeout (default 10s).
+Latency: search fans out across 4 sources and may take up to the configured timeout (default 10s). Clients should set appropriate tool timeouts.
 
-NusaShell can consume this as an external stdio MCP server via manual config; no bundled plugin is shipped.
+### Example MCP client config
+
+Generic stdio MCP entry (Cursor, Claude Desktop, NusaShell custom MCP, etc.):
+
+```json
+{
+  "command": "searchwire-mcp",
+  "args": [],
+  "env": {
+    "GITHUB_TOKEN": ""
+  }
+}
+```
+
+NusaShell can consume this as an **external** stdio MCP server via manual config. This repo does **not** ship a NusaShell plugin bundle.
 
 ## Built-in sources
 
@@ -129,6 +169,7 @@ When at least one source succeeds, `Search` returns a `*Response` with merged re
 
 - HTML adapters can break when source markup changes.
 - Ordinary text/web results only; no images, news, maps, or shopping categories.
+- Fetch is text-oriented (no headless browser / JS execution).
 - No CAPTCHA solving, proxy rotation, or anti-bot bypasses.
 - Not a promise of SearXNG parity or engine compatibility.
 

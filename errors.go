@@ -8,6 +8,9 @@ import (
 
 var (
 	ErrEmptyQuery            = errors.New("searchwire: query is required")
+	ErrEmptyURL              = errors.New("searchwire: url is required")
+	ErrInvalidURL            = errors.New("searchwire: invalid url")
+	ErrUnsupportedScheme     = errors.New("searchwire: unsupported url scheme")
 	ErrNilSearcher           = errors.New("searchwire: nil searcher")
 	ErrResponseTooLarge      = errors.New("searchwire: response exceeds configured limit")
 	ErrUnexpectedContentType = errors.New("searchwire: unexpected content type")
