@@ -95,11 +95,11 @@ searchwire-mcp
 Recommended agent workflow: **`searchwire_search` → pick URLs → `searchwire_fetch`**. Snippets alone are incomplete; fetch promising hits for full content.
 
 `searchwire_answer` is capability-driven: it is absent from MCP tool discovery
-when none of `BRAVE_SEARCH_API_KEY`, `OPENROUTER_API_KEY`, or `OPENAI_API_KEY`
-is available. Restart the MCP process after adding or removing a key so clients
-receive the updated tool list. When multiple providers are configured, omit
-`provider` to use the stable order Brave → OpenRouter → OpenAI, or pass one of
-`brave`, `openrouter`, or `openai` explicitly.
+when none of `BRAVE_SEARCH_API_KEY`, `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, or
+`PERPLEXITY_API_KEY` is available. Restart the MCP process after adding or
+removing a key so clients receive the updated tool list. When multiple providers
+are configured, omit `provider` to use the stable order Brave → OpenRouter →
+OpenAI → Perplexity, or pass a provider explicitly.
 
 Brave keys must have access to the Answers plan; a Search-only subscription can
 still produce a provider billing/authorization error. OpenRouter uses its
@@ -118,6 +118,8 @@ configuration or its model env var.
 | `OPENROUTER_MODEL` | library | OpenRouter answer model (default `openrouter/auto`) |
 | `OPENAI_API_KEY` | library | Optional OpenAI key; enables the `openai` answer provider |
 | `OPENAI_MODEL` | library | OpenAI answer model (default `gpt-5.6-luna`) |
+| `PERPLEXITY_API_KEY` | library | Optional Perplexity key; enables the `perplexity` answer provider |
+| `PERPLEXITY_PRESET` | library | Perplexity Agent API preset (default `low`) |
 | `GITHUB_TOKEN` | library | Optional GitHub API token (higher rate limits) |
 | `SEARCHWIRE_LIMIT` | adapter | Default result limit (int; unset = library default) |
 | `SEARCHWIRE_TIMEOUT` | adapter | HTTP client timeout as a Go duration string (e.g. `10s`; unset = library default) |
@@ -173,6 +175,10 @@ searcher := searchwire.New(searchwire.Config{
 		APIKey: "...", // or read OPENAI_API_KEY
 		Model:  "gpt-5.6-luna",
 	},
+	Perplexity: searchwire.PerplexityConfig{
+		APIKey: "...", // or read PERPLEXITY_API_KEY
+		Preset: "low",
+	},
 	GitHub: searchwire.GitHubConfig{
 		Token: "ghp_...", // or read GITHUB_TOKEN
 	},
@@ -201,10 +207,11 @@ mode and structured citation extraction are not yet exposed.
 
 ### LLM answer providers
 
-| Provider | Key env | Model env | Default model | Hosted web tool |
+| Provider | Key env | Model/preset env | Default | Hosted web tool |
 |----------|---------|-----------|---------------|-----------------|
 | OpenRouter | `OPENROUTER_API_KEY` | `OPENROUTER_MODEL` | `openrouter/auto` | `openrouter:web_search` |
 | OpenAI | `OPENAI_API_KEY` | `OPENAI_MODEL` | `gpt-5.6-luna` | Responses API `web_search` |
+| Perplexity | `PERPLEXITY_API_KEY` | `PERPLEXITY_PRESET` | `low` preset | Agent API web search + fetch |
 
 OpenRouter can route web-grounded requests to supported OpenAI, Anthropic,
 Google, xAI, and Perplexity model families without adding another Searchwire

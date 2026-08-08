@@ -58,6 +58,15 @@ func TestOpenAIConfigResolvesDefaultsAndEnvironment(t *testing.T) {
 	}
 }
 
+func TestPerplexityConfigResolvesDefaultsAndEnvironment(t *testing.T) {
+	t.Setenv("PERPLEXITY_API_KEY", "perplexity_test_key")
+	t.Setenv("PERPLEXITY_PRESET", "")
+	settings := (PerplexityConfig{}).resolved()
+	if settings.apiKey != "perplexity_test_key" || settings.preset != "low" {
+		t.Fatalf("settings = %#v", settings)
+	}
+}
+
 func TestLLMProviderExplicitValuesOverrideEnvironment(t *testing.T) {
 	t.Setenv("CUSTOM_OPENROUTER_KEY", "from-env")
 	openrouter := (OpenRouterConfig{

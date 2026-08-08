@@ -23,6 +23,7 @@ type Config struct {
 	// metasearch sources; a resolved API key enables the answer capability.
 	OpenRouter OpenRouterConfig
 	OpenAI     OpenAIConfig
+	Perplexity PerplexityConfig
 	// Google and Custom are future-dev placeholders. They are not read by New()
 	// until their source adapters are implemented.
 	Google GoogleConfig
@@ -63,6 +64,17 @@ type OpenAIConfig struct {
 	// cost-focused gpt-5.6-luna model.
 	Model    string
 	ModelEnv string
+}
+
+// PerplexityConfig controls web-grounded answers through the Agent API.
+type PerplexityConfig struct {
+	// APIKey overrides APIKeyEnv (default PERPLEXITY_API_KEY).
+	APIKey    string
+	APIKeyEnv string
+	// Preset overrides PresetEnv (default PERPLEXITY_PRESET), then falls back
+	// to Perplexity's cost-focused low preset.
+	Preset    string
+	PresetEnv string
 }
 
 // GitHubConfig controls the built-in GitHub Search API source.
@@ -141,6 +153,11 @@ type llmAnswerSettings struct {
 	model  string
 }
 
+type perplexitySettings struct {
+	apiKey string
+	preset string
+}
+
 func (b BraveConfig) resolved() braveSettings {
 	settings := braveSettings{enabled: true}
 	if b.Enabled != nil {
@@ -169,6 +186,14 @@ func (c OpenAIConfig) resolved() llmAnswerSettings {
 		c.APIKey, c.APIKeyEnv, "OPENAI_API_KEY",
 		c.Model, c.ModelEnv, "OPENAI_MODEL", "gpt-5.6-luna",
 	)
+}
+
+func (c PerplexityConfig) resolved() perplexitySettings {
+	settings := resolveLLMAnswerSettings(
+		c.APIKey, c.APIKeyEnv, "PERPLEXITY_API_KEY",
+		c.Preset, c.PresetEnv, "PERPLEXITY_PRESET", "low",
+	)
+	return perplexitySettings{apiKey: settings.apiKey, preset: settings.model}
 }
 
 func resolveLLMAnswerSettings(apiKey, apiKeyEnv, defaultAPIKeyEnv, model, modelEnv, defaultModelEnv, defaultModel string) llmAnswerSettings {

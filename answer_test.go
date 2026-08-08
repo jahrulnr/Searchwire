@@ -19,10 +19,16 @@ func answerJSONResponse(body string) *http.Response {
 	}
 }
 
-func TestAnswerUnavailableWithoutAPIKey(t *testing.T) {
+func clearAnswerProviderKeys(t *testing.T) {
+	t.Helper()
 	t.Setenv("BRAVE_SEARCH_API_KEY", "")
 	t.Setenv("OPENROUTER_API_KEY", "")
 	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("PERPLEXITY_API_KEY", "")
+}
+
+func TestAnswerUnavailableWithoutAPIKey(t *testing.T) {
+	clearAnswerProviderKeys(t)
 	searcher := New(Config{})
 	if searcher.CanAnswer() {
 		t.Fatal("CanAnswer returned true without an API key")
@@ -33,6 +39,7 @@ func TestAnswerUnavailableWithoutAPIKey(t *testing.T) {
 }
 
 func TestAvailableAnswerProvidersAreStableAndAnswerCanSelectOne(t *testing.T) {
+	clearAnswerProviderKeys(t)
 	client := &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
 		switch r.URL.Host {
 		case "api.search.brave.com":
@@ -75,6 +82,7 @@ func TestAvailableAnswerProvidersAreStableAndAnswerCanSelectOne(t *testing.T) {
 }
 
 func TestAnswerRejectsUnavailableRequestedProvider(t *testing.T) {
+	clearAnswerProviderKeys(t)
 	searcher := New(Config{Brave: BraveConfig{APIKey: "brave_test_key"}})
 	_, err := searcher.AnswerWithOptions(context.Background(), "question", AnswerOptions{Provider: "openai"})
 	if !errors.Is(err, ErrAnswerProviderUnavailable) {
@@ -161,6 +169,40 @@ func TestOpenAIAnswerUsesResponsesWebSearchTool(t *testing.T) {
 	}
 }
 
+func TestPerplexityAnswerUsesLowCostAgentPreset(t *testing.T) {
+	t.Setenv("BRAVE_SEARCH_API_KEY", "")
+	t.Setenv("OPENROUTER_API_KEY", "")
+	t.Setenv("OPENAI_API_KEY", "")
+	var requestBody struct {
+		Preset string `json:"preset"`
+		Input  string `json:"input"`
+	}
+	client := &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		if err := json.NewDecoder(r.Body).Decode(&requestBody); err != nil {
+			t.Fatal(err)
+		}
+		if r.Method != http.MethodPost || r.URL.String() != "https://api.perplexity.ai/v1/agent" {
+			t.Fatalf("request = %s %s", r.Method, r.URL)
+		}
+		if r.Header.Get("Authorization") != "Bearer perplexity_test_key" {
+			t.Fatalf("authorization = %q", r.Header.Get("Authorization"))
+		}
+		return answerJSONResponse(`{"output":[{"type":"search_results","results":[]},{"type":"message","content":[{"type":"output_text","text":"grounded answer"}]}]}`), nil
+	})}
+	searcher := New(Config{HTTPClient: client, Perplexity: PerplexityConfig{APIKey: "perplexity_test_key"}})
+
+	answer, err := searcher.Answer(context.Background(), "latest news")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requestBody.Preset != "low" || requestBody.Input != "latest news" {
+		t.Fatalf("request body = %#v", requestBody)
+	}
+	if answer.Provider != "perplexity" || answer.Text != "grounded answer" {
+		t.Fatalf("answer = %#v", answer)
+	}
+}
+
 func TestLLMAnswerProvidersNeverExposeAPIKeys(t *testing.T) {
 	for name, testCase := range map[string]struct {
 		provider string
@@ -179,6 +221,13 @@ func TestLLMAnswerProvidersNeverExposeAPIKeys(t *testing.T) {
 			key:      "openai_secret_key",
 			config: func(client HTTPClient) Config {
 				return Config{HTTPClient: client, OpenAI: OpenAIConfig{APIKey: "openai_secret_key"}}
+			},
+		},
+		"perplexity": {
+			provider: "perplexity",
+			key:      "perplexity_secret_key",
+			config: func(client HTTPClient) Config {
+				return Config{HTTPClient: client, Perplexity: PerplexityConfig{APIKey: "perplexity_secret_key"}}
 			},
 		},
 	} {
