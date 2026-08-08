@@ -103,6 +103,26 @@ func TestBraveAPIRejectsWrongContentType(t *testing.T) {
 	}
 }
 
+func TestBraveAPINeverExposesAPIKeyInErrors(t *testing.T) {
+	const apiKey = "brave_secret_test_key"
+	client := &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusUnauthorized,
+			Status:     "401 Unauthorized",
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"error":"invalid key ` + apiKey + `"}`)),
+		}, nil
+	})}
+	f := newFetcher(client, defaultUserAgent, defaultMaxResponseBytes)
+	_, err := (braveSource{apiKey: apiKey}).search(context.Background(), f, "Go", 5)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if strings.Contains(err.Error(), apiKey) {
+		t.Fatalf("api key leaked in error: %v", err)
+	}
+}
+
 func TestBraveRejectsOversizedResponse(t *testing.T) {
 	client := &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
 		body := strings.Repeat("a", int(defaultMaxResponseBytes)+10)

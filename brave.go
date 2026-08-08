@@ -56,7 +56,7 @@ func (b braveSource) searchAPI(ctx context.Context, f *fetcher, query string, li
 	headers := http.Header{"X-Subscription-Token": []string{b.apiKey}}
 	body, err := f.getWithHeaders(ctx, endpoint.String(), "application/json", []string{"application/json"}, headers)
 	if err != nil {
-		return nil, err
+		return nil, redactErrorSecret(err, b.apiKey)
 	}
 	return parseBraveAPIResults(body, limit)
 }

@@ -89,6 +89,7 @@ Recommended agent workflow: **`searchwire_search` → pick URLs → `searchwire_
 
 | Variable | Scope | Description |
 |----------|-------|-------------|
+| `BRAVE_SEARCH_API_KEY` | library | Optional official Brave Search API key; replaces the Brave HTML adapter when set |
 | `GITHUB_TOKEN` | library | Optional GitHub API token (higher rate limits) |
 | `SEARCHWIRE_LIMIT` | adapter | Default result limit (int; unset = library default) |
 | `SEARCHWIRE_TIMEOUT` | adapter | HTTP client timeout as a Go duration string (e.g. `10s`; unset = library default) |
@@ -116,7 +117,7 @@ NusaShell can consume this as an **external** stdio MCP server via manual config
 
 Searchwire fans out concurrently to:
 
-1. Brave Search (HTML)
+1. Brave Search (HTML by default; official JSON API when configured)
 2. Startpage (HTML)
 3. Wikipedia MediaWiki API (JSON)
 4. GitHub Search API (repositories + issues; falls back to repositories when issues search fails)
@@ -133,11 +134,28 @@ Unauthenticated GitHub search is limited to about 10 requests per minute across 
 searcher := searchwire.New(searchwire.Config{
 	Limit:      5,
 	HTTPClient: httpClient,
+	Brave: searchwire.BraveConfig{
+		APIKey: "...", // or read BRAVE_SEARCH_API_KEY
+	},
 	GitHub: searchwire.GitHubConfig{
 		Token: "ghp_...", // or read GITHUB_TOKEN
 	},
 })
 ```
+
+### Brave
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `Enabled` | `true` | Register the Brave source |
+| `APIKey` | — | Official Brave Search API key; overrides env |
+| `APIKeyEnv` | `BRAVE_SEARCH_API_KEY` | Environment variable used for the key |
+
+With no key, the zero-configuration Brave HTML adapter remains active. When a
+key is present, Searchwire replaces it with the official
+[Brave Web Search API](https://api-dashboard.search.brave.com/app/documentation/web-search/get-started)
+under the same `brave` source name; it does not query both or double-count
+duplicate results.
 
 ### GitHub
 

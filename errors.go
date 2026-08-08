@@ -51,3 +51,18 @@ func (e *HTTPError) Error() string {
 	}
 	return fmt.Sprintf("searchwire: source returned %s: %s", e.Status, e.Body)
 }
+
+func redactErrorSecret(err error, secret string) error {
+	if err == nil || secret == "" || !strings.Contains(err.Error(), secret) {
+		return err
+	}
+	var httpErr *HTTPError
+	if errors.As(err, &httpErr) {
+		return &HTTPError{
+			StatusCode: httpErr.StatusCode,
+			Status:     strings.ReplaceAll(httpErr.Status, secret, "[redacted]"),
+			Body:       strings.ReplaceAll(httpErr.Body, secret, "[redacted]"),
+		}
+	}
+	return errors.New(strings.ReplaceAll(err.Error(), secret, "[redacted]"))
+}

@@ -296,6 +296,16 @@ func TestTokenNeverAppearsInOutput(t *testing.T) {
 	}
 }
 
+func TestRedactSecretsIncludesBraveAPIKey(t *testing.T) {
+	const secret = "brave_secret_token_do_not_leak"
+	t.Setenv("BRAVE_SEARCH_API_KEY", secret)
+
+	redacted := redactSecrets("invalid X-Subscription-Token: " + secret)
+	if strings.Contains(redacted, secret) || !strings.Contains(redacted, "[redacted]") {
+		t.Fatalf("redacted = %q", redacted)
+	}
+}
+
 func TestConfigFromEnv(t *testing.T) {
 	t.Setenv(envLimit, "3")
 	t.Setenv(envTimeout, "2s")
