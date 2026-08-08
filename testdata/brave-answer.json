@@ -1,0 +1,15 @@
+{
+  "id": "answer-1",
+  "object": "chat.completion",
+  "model": "brave",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "Go is an open source programming language."
+      },
+      "finish_reason": "stop"
+    }
+  ]
+}

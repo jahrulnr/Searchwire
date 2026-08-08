@@ -1,6 +1,7 @@
 package searchwire
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -42,12 +43,23 @@ func (f *fetcher) get(ctx context.Context, rawURL, accept string, allowedTypes [
 }
 
 func (f *fetcher) getWithHeaders(ctx context.Context, rawURL, accept string, allowedTypes []string, headers http.Header) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	return f.do(ctx, http.MethodGet, rawURL, accept, "", nil, allowedTypes, headers)
+}
+
+func (f *fetcher) postJSON(ctx context.Context, rawURL string, body []byte, headers http.Header) ([]byte, error) {
+	return f.do(ctx, http.MethodPost, rawURL, "application/json", "application/json", bytes.NewReader(body), []string{"application/json"}, headers)
+}
+
+func (f *fetcher) do(ctx context.Context, method, rawURL, accept, contentType string, requestBody io.Reader, allowedTypes []string, headers http.Header) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, method, rawURL, requestBody)
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Accept", accept)
 	req.Header.Set("User-Agent", f.userAgent)
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
 	for name, values := range headers {
 		for _, value := range values {
 			req.Header.Add(name, value)
