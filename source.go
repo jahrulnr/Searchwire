@@ -38,12 +38,21 @@ func newFetcher(client HTTPClient, userAgent string, maxSize int64) *fetcher {
 }
 
 func (f *fetcher) get(ctx context.Context, rawURL, accept string, allowedTypes []string) ([]byte, error) {
+	return f.getWithHeaders(ctx, rawURL, accept, allowedTypes, nil)
+}
+
+func (f *fetcher) getWithHeaders(ctx context.Context, rawURL, accept string, allowedTypes []string, headers http.Header) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Accept", accept)
 	req.Header.Set("User-Agent", f.userAgent)
+	for name, values := range headers {
+		for _, value := range values {
+			req.Header.Add(name, value)
+		}
+	}
 
 	resp, err := f.client.Do(req)
 	if err != nil {

@@ -24,6 +24,41 @@ func TestGitHubConfigExplicitTokenOverridesEnv(t *testing.T) {
 	}
 }
 
+func TestBraveConfigFromEnv(t *testing.T) {
+	t.Setenv("BRAVE_SEARCH_API_KEY", "brave_test_key")
+	settings := BraveConfig{APIKeyEnv: "BRAVE_SEARCH_API_KEY"}.resolved()
+	if settings.apiKey != "brave_test_key" {
+		t.Fatalf("api key = %q", settings.apiKey)
+	}
+}
+
+func TestBraveConfigExplicitAPIKeyOverridesEnv(t *testing.T) {
+	t.Setenv("BRAVE_SEARCH_API_KEY", "from-env")
+	settings := BraveConfig{APIKey: "from-config"}.resolved()
+	if settings.apiKey != "from-config" {
+		t.Fatalf("api key = %q", settings.apiKey)
+	}
+}
+
+func TestBraveDisabledRemovesSource(t *testing.T) {
+	disabled := false
+	s := New(Config{Brave: BraveConfig{Enabled: &disabled}})
+	if got := sourceNames(s.sources); containsString(got, "brave") {
+		t.Fatalf("sources = %#v", got)
+	}
+}
+
+func TestBraveAPIKeyReplacesHTMLSource(t *testing.T) {
+	s := New(Config{Brave: BraveConfig{APIKey: "brave_test_key"}})
+	if len(s.sources) != 4 {
+		t.Fatalf("sources = %d", len(s.sources))
+	}
+	brave, ok := s.sources[0].(braveSource)
+	if !ok || brave.apiKey != "brave_test_key" {
+		t.Fatalf("brave source = %#v", s.sources[0])
+	}
+}
+
 func TestGitHubDisabledRemovesSource(t *testing.T) {
 	disabled := false
 	s := New(Config{GitHub: GitHubConfig{Enabled: &disabled}})
@@ -82,7 +117,7 @@ func TestGitHubTokenSentAsBearer(t *testing.T) {
 }
 
 func TestDefaultConfigZeroValue(t *testing.T) {
-	if got := DefaultConfig(); got.Limit != 0 || got.GitHub.Token != "" {
+	if got := DefaultConfig(); got.Limit != 0 || got.GitHub.Token != "" || got.Brave.APIKey != "" {
 		t.Fatalf("default config = %#v", got)
 	}
 	cfg := DefaultConfig().withDefaults()

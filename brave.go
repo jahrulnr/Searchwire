@@ -2,20 +2,28 @@ package searchwire
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"golang.org/x/net/html"
 )
 
-type braveSource struct{}
+type braveSource struct {
+	apiKey string
+}
 
 func (braveSource) name() string { return "brave" }
 
-func (braveSource) search(ctx context.Context, f *fetcher, query string, limit int) ([]sourceResult, error) {
+func (b braveSource) search(ctx context.Context, f *fetcher, query string, limit int) ([]sourceResult, error) {
 	if limit <= 0 {
 		limit = defaultLimit
+	}
+	if b.apiKey != "" {
+		return b.searchAPI(ctx, f, query, limit)
 	}
 	endpoint := url.URL{
 		Scheme: "https",
@@ -32,6 +40,60 @@ func (braveSource) search(ctx context.Context, f *fetcher, query string, limit i
 		return nil, err
 	}
 	return parseBraveResults(body, limit)
+}
+
+func (b braveSource) searchAPI(ctx context.Context, f *fetcher, query string, limit int) ([]sourceResult, error) {
+	endpoint := url.URL{
+		Scheme: "https",
+		Host:   "api.search.brave.com",
+		Path:   "/res/v1/web/search",
+	}
+	params := endpoint.Query()
+	params.Set("q", query)
+	params.Set("count", strconv.Itoa(limit))
+	endpoint.RawQuery = params.Encode()
+
+	headers := http.Header{"X-Subscription-Token": []string{b.apiKey}}
+	body, err := f.getWithHeaders(ctx, endpoint.String(), "application/json", []string{"application/json"}, headers)
+	if err != nil {
+		return nil, err
+	}
+	return parseBraveAPIResults(body, limit)
+}
+
+type braveAPIResponse struct {
+	Web struct {
+		Results []struct {
+			Title       string `json:"title"`
+			URL         string `json:"url"`
+			Description string `json:"description"`
+		} `json:"results"`
+	} `json:"web"`
+}
+
+func parseBraveAPIResults(body []byte, limit int) ([]sourceResult, error) {
+	var payload braveAPIResponse
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, fmt.Errorf("parse brave api response: %w", err)
+	}
+	results := make([]sourceResult, 0, min(limit, len(payload.Web.Results)))
+	for _, item := range payload.Web.Results {
+		if len(results) >= limit {
+			break
+		}
+		title := collapseWhitespace(item.Title)
+		resultURL := strings.TrimSpace(item.URL)
+		if title == "" || !isSafeResultURL(resultURL) {
+			continue
+		}
+		results = append(results, sourceResult{
+			title:   title,
+			url:     resultURL,
+			snippet: htmlText(item.Description),
+			rank:    len(results) + 1,
+		})
+	}
+	return results, nil
 }
 
 func parseBraveResults(body []byte, limit int) ([]sourceResult, error) {

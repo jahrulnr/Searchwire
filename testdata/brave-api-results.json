@@ -1,0 +1,26 @@
+{
+  "web": {
+    "results": [
+      {
+        "title": "Go Programming Language",
+        "url": "https://go.dev/",
+        "description": "Build <strong>fast</strong>, reliable, and efficient software."
+      },
+      {
+        "title": "The Go Blog",
+        "url": "https://go.dev/blog/",
+        "description": "News from the Go team."
+      },
+      {
+        "title": "Unsafe",
+        "url": "javascript:alert(1)",
+        "description": "Must not be returned."
+      },
+      {
+        "title": "",
+        "url": "https://example.com/no-title",
+        "description": "Must not be returned."
+      }
+    ]
+  }
+}

@@ -42,6 +42,14 @@ func textContent(node *html.Node) string {
 	return collapseWhitespace(b.String())
 }
 
+func htmlText(value string) string {
+	doc, err := html.Parse(strings.NewReader("<div>" + value + "</div>"))
+	if err != nil {
+		return collapseWhitespace(value)
+	}
+	return textContent(doc)
+}
+
 func collapseWhitespace(value string) string {
 	return strings.Join(strings.Fields(value), " ")
 }

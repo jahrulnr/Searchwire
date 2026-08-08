@@ -17,11 +17,26 @@ type Config struct {
 	MaxResponseBytes int64
 	Timeout          time.Duration
 
+	Brave  BraveConfig
 	GitHub GitHubConfig
 	// Google and Custom are future-dev placeholders. They are not read by New()
 	// until their source adapters are implemented.
 	Google GoogleConfig
 	Custom CustomSearchConfig
+}
+
+// BraveConfig controls the built-in Brave source. Without an API key,
+// Searchwire uses Brave's public HTML results. Supplying a key switches the
+// source to the official Brave Search API while preserving the source name.
+type BraveConfig struct {
+	// Enabled registers the Brave source. Default true.
+	Enabled *bool
+
+	// APIKey is sent as X-Subscription-Token. When empty, APIKeyEnv is read.
+	APIKey string
+	// APIKeyEnv names the environment variable for APIKey
+	// (default BRAVE_SEARCH_API_KEY).
+	APIKeyEnv string
 }
 
 // GitHubConfig controls the built-in GitHub Search API source.
@@ -90,6 +105,27 @@ type githubSettings struct {
 	searchIssues bool
 }
 
+type braveSettings struct {
+	enabled bool
+	apiKey  string
+}
+
+func (b BraveConfig) resolved() braveSettings {
+	settings := braveSettings{enabled: true}
+	if b.Enabled != nil {
+		settings.enabled = *b.Enabled
+	}
+	settings.apiKey = strings.TrimSpace(b.APIKey)
+	if settings.apiKey == "" {
+		env := strings.TrimSpace(b.APIKeyEnv)
+		if env == "" {
+			env = "BRAVE_SEARCH_API_KEY"
+		}
+		settings.apiKey = strings.TrimSpace(os.Getenv(env))
+	}
+	return settings
+}
+
 func (g GitHubConfig) resolved() githubSettings {
 	settings := githubSettings{
 		enabled:      true,
@@ -113,11 +149,14 @@ func (g GitHubConfig) resolved() githubSettings {
 }
 
 func sourcesFromConfig(cfg Config) []source {
-	sources := []source{
-		braveSource{},
+	sources := make([]source, 0, 4)
+	if settings := cfg.Brave.resolved(); settings.enabled {
+		sources = append(sources, braveSource{apiKey: settings.apiKey})
+	}
+	sources = append(sources,
 		startpageSource{},
 		wikipediaSource{},
-	}
+	)
 	if cfg.GitHub.resolved().enabled {
 		settings := cfg.GitHub.resolved()
 		sources = append(sources, githubSource{
