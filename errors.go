@@ -7,16 +7,17 @@ import (
 )
 
 var (
-	ErrEmptyQuery              = errors.New("searchwire: query is required")
-	ErrEmptyQuestion           = errors.New("searchwire: question is required")
-	ErrEmptyURL                = errors.New("searchwire: url is required")
-	ErrInvalidURL              = errors.New("searchwire: invalid url")
-	ErrUnsupportedScheme       = errors.New("searchwire: unsupported url scheme")
-	ErrNilSearcher             = errors.New("searchwire: nil searcher")
-	ErrResponseTooLarge        = errors.New("searchwire: response exceeds configured limit")
-	ErrUnexpectedContentType   = errors.New("searchwire: unexpected content type")
-	ErrAnswerUnavailable       = errors.New("searchwire: answer provider is unavailable")
-	ErrInvalidProviderResponse = errors.New("searchwire: invalid provider response")
+	ErrEmptyQuery                = errors.New("searchwire: query is required")
+	ErrEmptyQuestion             = errors.New("searchwire: question is required")
+	ErrEmptyURL                  = errors.New("searchwire: url is required")
+	ErrInvalidURL                = errors.New("searchwire: invalid url")
+	ErrUnsupportedScheme         = errors.New("searchwire: unsupported url scheme")
+	ErrNilSearcher               = errors.New("searchwire: nil searcher")
+	ErrResponseTooLarge          = errors.New("searchwire: response exceeds configured limit")
+	ErrUnexpectedContentType     = errors.New("searchwire: unexpected content type")
+	ErrAnswerUnavailable         = errors.New("searchwire: answer provider is unavailable")
+	ErrAnswerProviderUnavailable = errors.New("searchwire: requested answer provider is unavailable")
+	ErrInvalidProviderResponse   = errors.New("searchwire: invalid provider response")
 )
 
 // SearchError is returned when every built-in source fails.

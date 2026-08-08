@@ -10,14 +10,194 @@ import (
 	"testing"
 )
 
+func answerJSONResponse(body string) *http.Response {
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Status:     "200 OK",
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+}
+
 func TestAnswerUnavailableWithoutAPIKey(t *testing.T) {
 	t.Setenv("BRAVE_SEARCH_API_KEY", "")
+	t.Setenv("OPENROUTER_API_KEY", "")
+	t.Setenv("OPENAI_API_KEY", "")
 	searcher := New(Config{})
 	if searcher.CanAnswer() {
 		t.Fatal("CanAnswer returned true without an API key")
 	}
 	if _, err := searcher.Answer(context.Background(), "What is Go?"); !errors.Is(err, ErrAnswerUnavailable) {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestAvailableAnswerProvidersAreStableAndAnswerCanSelectOne(t *testing.T) {
+	client := &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		switch r.URL.Host {
+		case "api.search.brave.com":
+			return answerJSONResponse(`{"choices":[{"message":{"content":"from brave"}}]}`), nil
+		case "openrouter.ai":
+			return answerJSONResponse(`{"choices":[{"message":{"content":"from openrouter"}}]}`), nil
+		case "api.openai.com":
+			return answerJSONResponse(`{"output":[{"type":"message","content":[{"type":"output_text","text":"from openai"}]}]}`), nil
+		default:
+			t.Fatalf("unexpected host %q", r.URL.Host)
+			return nil, nil
+		}
+	})}
+	searcher := New(Config{
+		HTTPClient: client,
+		Brave:      BraveConfig{APIKey: "brave_test_key"},
+		OpenRouter: OpenRouterConfig{APIKey: "openrouter_test_key"},
+		OpenAI:     OpenAIConfig{APIKey: "openai_test_key"},
+	})
+
+	providers := searcher.AvailableAnswerProviders()
+	want := []string{"brave", "openrouter", "openai"}
+	if len(providers) != len(want) {
+		t.Fatalf("providers = %#v", providers)
+	}
+	for i := range want {
+		if providers[i] != want[i] {
+			t.Fatalf("providers = %#v", providers)
+		}
+	}
+
+	defaultAnswer, err := searcher.Answer(context.Background(), "question")
+	if err != nil || defaultAnswer.Provider != "brave" {
+		t.Fatalf("default answer = %#v, err = %v", defaultAnswer, err)
+	}
+	selected, err := searcher.AnswerWithOptions(context.Background(), "question", AnswerOptions{Provider: "openai"})
+	if err != nil || selected.Provider != "openai" || selected.Text != "from openai" {
+		t.Fatalf("selected answer = %#v, err = %v", selected, err)
+	}
+}
+
+func TestAnswerRejectsUnavailableRequestedProvider(t *testing.T) {
+	searcher := New(Config{Brave: BraveConfig{APIKey: "brave_test_key"}})
+	_, err := searcher.AnswerWithOptions(context.Background(), "question", AnswerOptions{Provider: "openai"})
+	if !errors.Is(err, ErrAnswerProviderUnavailable) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestOpenRouterAnswerUsesServerWebSearchTool(t *testing.T) {
+	t.Setenv("BRAVE_SEARCH_API_KEY", "")
+	t.Setenv("OPENAI_API_KEY", "")
+	var requestBody struct {
+		Model    string `json:"model"`
+		Messages []struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"messages"`
+		Tools []struct {
+			Type string `json:"type"`
+		} `json:"tools"`
+		MaxToolCalls int `json:"max_tool_calls"`
+	}
+	client := &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		if err := json.NewDecoder(r.Body).Decode(&requestBody); err != nil {
+			t.Fatal(err)
+		}
+		if r.Method != http.MethodPost || r.URL.String() != "https://openrouter.ai/api/v1/chat/completions" {
+			t.Fatalf("request = %s %s", r.Method, r.URL)
+		}
+		if r.Header.Get("Authorization") != "Bearer openrouter_test_key" {
+			t.Fatalf("authorization = %q", r.Header.Get("Authorization"))
+		}
+		return answerJSONResponse(`{"choices":[{"message":{"content":"grounded answer"}}]}`), nil
+	})}
+	searcher := New(Config{HTTPClient: client, OpenRouter: OpenRouterConfig{APIKey: "openrouter_test_key"}})
+
+	answer, err := searcher.Answer(context.Background(), "latest news")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requestBody.Model != "openrouter/auto" || len(requestBody.Messages) != 1 || requestBody.Messages[0].Content != "latest news" {
+		t.Fatalf("request body = %#v", requestBody)
+	}
+	if len(requestBody.Tools) != 1 || requestBody.Tools[0].Type != "openrouter:web_search" || requestBody.MaxToolCalls != 1 {
+		t.Fatalf("tools = %#v max_tool_calls = %d", requestBody.Tools, requestBody.MaxToolCalls)
+	}
+	if answer.Provider != "openrouter" || answer.Text != "grounded answer" {
+		t.Fatalf("answer = %#v", answer)
+	}
+}
+
+func TestOpenAIAnswerUsesResponsesWebSearchTool(t *testing.T) {
+	t.Setenv("BRAVE_SEARCH_API_KEY", "")
+	t.Setenv("OPENROUTER_API_KEY", "")
+	var requestBody struct {
+		Model string `json:"model"`
+		Input string `json:"input"`
+		Tools []struct {
+			Type string `json:"type"`
+		} `json:"tools"`
+	}
+	client := &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		if err := json.NewDecoder(r.Body).Decode(&requestBody); err != nil {
+			t.Fatal(err)
+		}
+		if r.Method != http.MethodPost || r.URL.String() != "https://api.openai.com/v1/responses" {
+			t.Fatalf("request = %s %s", r.Method, r.URL)
+		}
+		if r.Header.Get("Authorization") != "Bearer openai_test_key" {
+			t.Fatalf("authorization = %q", r.Header.Get("Authorization"))
+		}
+		return answerJSONResponse(`{"output":[{"type":"web_search_call"},{"type":"message","content":[{"type":"output_text","text":"grounded answer"}]}]}`), nil
+	})}
+	searcher := New(Config{HTTPClient: client, OpenAI: OpenAIConfig{APIKey: "openai_test_key"}})
+
+	answer, err := searcher.Answer(context.Background(), "latest news")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requestBody.Model != "gpt-5.6-luna" || requestBody.Input != "latest news" || len(requestBody.Tools) != 1 || requestBody.Tools[0].Type != "web_search" {
+		t.Fatalf("request body = %#v", requestBody)
+	}
+	if answer.Provider != "openai" || answer.Text != "grounded answer" {
+		t.Fatalf("answer = %#v", answer)
+	}
+}
+
+func TestLLMAnswerProvidersNeverExposeAPIKeys(t *testing.T) {
+	for name, testCase := range map[string]struct {
+		provider string
+		key      string
+		config   func(HTTPClient) Config
+	}{
+		"openrouter": {
+			provider: "openrouter",
+			key:      "openrouter_secret_key",
+			config: func(client HTTPClient) Config {
+				return Config{HTTPClient: client, OpenRouter: OpenRouterConfig{APIKey: "openrouter_secret_key"}}
+			},
+		},
+		"openai": {
+			provider: "openai",
+			key:      "openai_secret_key",
+			config: func(client HTTPClient) Config {
+				return Config{HTTPClient: client, OpenAI: OpenAIConfig{APIKey: "openai_secret_key"}}
+			},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			client := &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusUnauthorized,
+					Status:     "401 Unauthorized",
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+					Body:       io.NopCloser(strings.NewReader(`{"error":"invalid key ` + testCase.key + `"}`)),
+				}, nil
+			})}
+			_, err := New(testCase.config(client)).AnswerWithOptions(
+				context.Background(), "question", AnswerOptions{Provider: testCase.provider},
+			)
+			if err == nil || strings.Contains(err.Error(), testCase.key) {
+				t.Fatalf("err = %v", err)
+			}
+		})
 	}
 }
 

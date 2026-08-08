@@ -10,6 +10,12 @@ import (
 
 const braveAnswersEndpoint = "https://api.search.brave.com/res/v1/chat/completions"
 
+const (
+	AnswerProviderBrave      = "brave"
+	AnswerProviderOpenRouter = "openrouter"
+	AnswerProviderOpenAI     = "openai"
+)
+
 type answerProvider interface {
 	name() string
 	answer(context.Context, *fetcher, string) (string, error)
@@ -22,13 +28,37 @@ type Answer struct {
 	Provider string
 }
 
+// AnswerOptions selects an optional configured provider. An empty provider
+// uses the first available provider in Searchwire's stable priority order.
+type AnswerOptions struct {
+	Provider string
+}
+
 // CanAnswer reports whether this Searcher has a configured answer provider.
 func (s *Searcher) CanAnswer() bool {
-	return s != nil && s.answerer != nil
+	return s != nil && len(s.answerers) > 0
+}
+
+// AvailableAnswerProviders returns configured provider identifiers in stable
+// default-selection order.
+func (s *Searcher) AvailableAnswerProviders() []string {
+	if s == nil || len(s.answerers) == 0 {
+		return nil
+	}
+	providers := make([]string, len(s.answerers))
+	for i, provider := range s.answerers {
+		providers[i] = provider.name()
+	}
+	return providers
 }
 
 // Answer returns a web-grounded answer when an answer provider is configured.
 func (s *Searcher) Answer(ctx context.Context, question string) (*Answer, error) {
+	return s.AnswerWithOptions(ctx, question, AnswerOptions{})
+}
+
+// AnswerWithOptions returns a web-grounded answer from the selected provider.
+func (s *Searcher) AnswerWithOptions(ctx context.Context, question string, options AnswerOptions) (*Answer, error) {
 	if s == nil {
 		return nil, ErrNilSearcher
 	}
@@ -39,31 +69,50 @@ func (s *Searcher) Answer(ctx context.Context, question string) (*Answer, error)
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if s.answerer == nil {
+	if len(s.answerers) == 0 {
 		return nil, ErrAnswerUnavailable
+	}
+	provider := s.answerers[0]
+	if requested := strings.ToLower(strings.TrimSpace(options.Provider)); requested != "" {
+		provider = nil
+		for _, candidate := range s.answerers {
+			if candidate.name() == requested {
+				provider = candidate
+				break
+			}
+		}
+		if provider == nil {
+			return nil, fmt.Errorf("%w: %s", ErrAnswerProviderUnavailable, requested)
+		}
 	}
 
 	fetcher := newFetcher(s.httpClient, s.userAgent, s.maxResponseSize)
-	text, err := s.answerer.answer(ctx, fetcher, question)
+	text, err := provider.answer(ctx, fetcher, question)
 	if err != nil {
 		return nil, err
 	}
-	return &Answer{Question: question, Text: text, Provider: s.answerer.name()}, nil
+	return &Answer{Question: question, Text: text, Provider: provider.name()}, nil
 }
 
-func answerProviderFromConfig(cfg Config) answerProvider {
-	settings := cfg.Brave.resolved()
-	if settings.apiKey == "" {
-		return nil
+func answerProvidersFromConfig(cfg Config) []answerProvider {
+	providers := make([]answerProvider, 0, 3)
+	if settings := cfg.Brave.resolved(); settings.apiKey != "" {
+		providers = append(providers, braveAnswerProvider{apiKey: settings.apiKey})
 	}
-	return braveAnswerProvider{apiKey: settings.apiKey}
+	if settings := cfg.OpenRouter.resolved(); settings.apiKey != "" {
+		providers = append(providers, openRouterAnswerProvider{apiKey: settings.apiKey, model: settings.model})
+	}
+	if settings := cfg.OpenAI.resolved(); settings.apiKey != "" {
+		providers = append(providers, openAIAnswerProvider{apiKey: settings.apiKey, model: settings.model})
+	}
+	return providers
 }
 
 type braveAnswerProvider struct {
 	apiKey string
 }
 
-func (braveAnswerProvider) name() string { return "brave" }
+func (braveAnswerProvider) name() string { return AnswerProviderBrave }
 
 type braveAnswerRequest struct {
 	Model    string               `json:"model"`

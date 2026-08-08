@@ -19,18 +19,20 @@ import (
 )
 
 const (
-	serverName        = "searchwire"
-	fallbackVersion   = "0.1.0"
-	searchToolName    = "searchwire_search"
-	fetchToolName     = "searchwire_fetch"
-	answerToolName    = "searchwire_answer"
-	maxErrorLen       = 240
-	envLimit          = "SEARCHWIRE_LIMIT"
-	envTimeout        = "SEARCHWIRE_TIMEOUT"
-	envMaxBytes       = "SEARCHWIRE_MAX_BYTES"
-	envGitHubToken    = "GITHUB_TOKEN"
-	envBraveAPIKey    = "BRAVE_SEARCH_API_KEY"
-	searchDescription = "Metasearch the open web across Brave, Startpage, Wikipedia, and GitHub. " +
+	serverName          = "searchwire"
+	fallbackVersion     = "0.1.0"
+	searchToolName      = "searchwire_search"
+	fetchToolName       = "searchwire_fetch"
+	answerToolName      = "searchwire_answer"
+	maxErrorLen         = 240
+	envLimit            = "SEARCHWIRE_LIMIT"
+	envTimeout          = "SEARCHWIRE_TIMEOUT"
+	envMaxBytes         = "SEARCHWIRE_MAX_BYTES"
+	envGitHubToken      = "GITHUB_TOKEN"
+	envBraveAPIKey      = "BRAVE_SEARCH_API_KEY"
+	envOpenRouterAPIKey = "OPENROUTER_API_KEY"
+	envOpenAIAPIKey     = "OPENAI_API_KEY"
+	searchDescription   = "Metasearch the open web across Brave, Startpage, Wikipedia, and GitHub. " +
 		"Returns ranked results with partial failure reporting when some sources fail. " +
 		"May take up to ~10s (or SEARCHWIRE_TIMEOUT) because sources are queried concurrently. " +
 		"After searching, use searchwire_fetch on promising URLs for full page text."
@@ -70,6 +72,7 @@ type fetchOutput struct {
 
 type answerInput struct {
 	Question string `json:"question" jsonschema:"the question to answer using current web information"`
+	Provider string `json:"provider,omitempty" jsonschema:"optional configured provider: brave, openrouter, or openai"`
 }
 
 type answerOutput struct {
@@ -215,7 +218,7 @@ func runFetch(ctx context.Context, base searchwire.Config, defaultMaxBytes int64
 }
 
 func runAnswer(ctx context.Context, base searchwire.Config, input answerInput) (answerOutput, error) {
-	answer, err := searchwire.New(base).Answer(ctx, input.Question)
+	answer, err := searchwire.New(base).AnswerWithOptions(ctx, input.Question, searchwire.AnswerOptions{Provider: input.Provider})
 	if err != nil {
 		return answerOutput{}, sanitizeAnswerErr(err)
 	}
@@ -329,6 +332,7 @@ func sanitizeAnswerErr(err error) error {
 	switch {
 	case errors.Is(err, searchwire.ErrEmptyQuestion),
 		errors.Is(err, searchwire.ErrAnswerUnavailable),
+		errors.Is(err, searchwire.ErrAnswerProviderUnavailable),
 		errors.Is(err, searchwire.ErrInvalidProviderResponse),
 		errors.Is(err, searchwire.ErrNilSearcher):
 		return err
@@ -364,6 +368,8 @@ func redactSecrets(msg string) string {
 	secrets := []string{
 		strings.TrimSpace(os.Getenv(envGitHubToken)),
 		strings.TrimSpace(os.Getenv(envBraveAPIKey)),
+		strings.TrimSpace(os.Getenv(envOpenRouterAPIKey)),
+		strings.TrimSpace(os.Getenv(envOpenAIAPIKey)),
 	}
 	for _, secret := range secrets {
 		if secret == "" {

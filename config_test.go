@@ -40,6 +40,46 @@ func TestBraveConfigExplicitAPIKeyOverridesEnv(t *testing.T) {
 	}
 }
 
+func TestOpenRouterConfigResolvesDefaultsAndEnvironment(t *testing.T) {
+	t.Setenv("OPENROUTER_API_KEY", "openrouter_test_key")
+	t.Setenv("OPENROUTER_MODEL", "")
+	settings := (OpenRouterConfig{}).resolved()
+	if settings.apiKey != "openrouter_test_key" || settings.model != "openrouter/auto" {
+		t.Fatalf("settings = %#v", settings)
+	}
+}
+
+func TestOpenAIConfigResolvesDefaultsAndEnvironment(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "openai_test_key")
+	t.Setenv("OPENAI_MODEL", "")
+	settings := (OpenAIConfig{}).resolved()
+	if settings.apiKey != "openai_test_key" || settings.model != "gpt-5.6-luna" {
+		t.Fatalf("settings = %#v", settings)
+	}
+}
+
+func TestLLMProviderExplicitValuesOverrideEnvironment(t *testing.T) {
+	t.Setenv("CUSTOM_OPENROUTER_KEY", "from-env")
+	openrouter := (OpenRouterConfig{
+		APIKey:    "from-config",
+		APIKeyEnv: "CUSTOM_OPENROUTER_KEY",
+		Model:     "anthropic/claude-sonnet-4.6",
+	}).resolved()
+	if openrouter.apiKey != "from-config" || openrouter.model != "anthropic/claude-sonnet-4.6" {
+		t.Fatalf("openrouter settings = %#v", openrouter)
+	}
+
+	t.Setenv("CUSTOM_OPENAI_KEY", "from-env")
+	openai := (OpenAIConfig{
+		APIKey:    "from-config",
+		APIKeyEnv: "CUSTOM_OPENAI_KEY",
+		Model:     "gpt-5.6-terra",
+	}).resolved()
+	if openai.apiKey != "from-config" || openai.model != "gpt-5.6-terra" {
+		t.Fatalf("openai settings = %#v", openai)
+	}
+}
+
 func TestBraveDisabledRemovesSource(t *testing.T) {
 	disabled := false
 	s := New(Config{Brave: BraveConfig{Enabled: &disabled}})

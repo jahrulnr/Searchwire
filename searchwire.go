@@ -26,7 +26,7 @@ type Searcher struct {
 	limit           int
 	maxResponseSize int64
 	sources         []source
-	answerer        answerProvider
+	answerers       []answerProvider
 }
 
 // New returns a Searcher configured by cfg. Use DefaultConfig() or the zero
@@ -39,7 +39,7 @@ func New(cfg Config) *Searcher {
 		limit:           cfg.Limit,
 		maxResponseSize: cfg.MaxResponseBytes,
 		sources:         sourcesFromConfig(cfg),
-		answerer:        answerProviderFromConfig(cfg),
+		answerers:       answerProvidersFromConfig(cfg),
 	}
 }
 

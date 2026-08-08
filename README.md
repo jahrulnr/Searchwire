@@ -90,23 +90,34 @@ searchwire-mcp
 |------|-------|--------|
 | `searchwire_search` | `{ "query": string, "limit"?: number }` | Searchwire response JSON (`query`, `results`, `errors`) |
 | `searchwire_fetch` | `{ "url": string, "max_bytes"?: number }` | Page JSON (`url`, `finalUrl`, `statusCode`, `contentType`, `title`, `text`, `truncated`, `bytes`) |
-| `searchwire_answer` | `{ "question": string }` | Web-grounded answer JSON (`question`, `answer`, `provider`); registered only when an answer-provider key is available |
+| `searchwire_answer` | `{ "question": string, "provider"?: string }` | Web-grounded answer JSON (`question`, `answer`, `provider`); registered only when an answer-provider key is available |
 
 Recommended agent workflow: **`searchwire_search` → pick URLs → `searchwire_fetch`**. Snippets alone are incomplete; fetch promising hits for full content.
 
 `searchwire_answer` is capability-driven: it is absent from MCP tool discovery
-when no answer provider is configured. With the current Brave implementation,
-setting `BRAVE_SEARCH_API_KEY` before starting `searchwire-mcp` enables it.
-Restart the MCP process after adding or removing the key so clients receive the
-updated tool list. The key must have access to Brave's Answers plan; having a
-Search-only subscription can still produce a provider billing/authorization
-error when the tool is called.
+when none of `BRAVE_SEARCH_API_KEY`, `OPENROUTER_API_KEY`, or `OPENAI_API_KEY`
+is available. Restart the MCP process after adding or removing a key so clients
+receive the updated tool list. When multiple providers are configured, omit
+`provider` to use the stable order Brave → OpenRouter → OpenAI, or pass one of
+`brave`, `openrouter`, or `openai` explicitly.
+
+Brave keys must have access to the Answers plan; a Search-only subscription can
+still produce a provider billing/authorization error. OpenRouter uses its
+current [`openrouter:web_search` server tool](https://openrouter.ai/docs/guides/features/server-tools/web-search)
+and defaults to `openrouter/auto`. OpenAI uses the Responses API
+[`web_search` tool](https://developers.openai.com/api/docs/guides/tools-web-search)
+and defaults to the cost-focused `gpt-5.6-luna`. Override either model with
+configuration or its model env var.
 
 ### Environment
 
 | Variable | Scope | Description |
 |----------|-------|-------------|
 | `BRAVE_SEARCH_API_KEY` | library | Optional official Brave Search API key; replaces the Brave HTML adapter when set |
+| `OPENROUTER_API_KEY` | library | Optional OpenRouter key; enables the `openrouter` answer provider |
+| `OPENROUTER_MODEL` | library | OpenRouter answer model (default `openrouter/auto`) |
+| `OPENAI_API_KEY` | library | Optional OpenAI key; enables the `openai` answer provider |
+| `OPENAI_MODEL` | library | OpenAI answer model (default `gpt-5.6-luna`) |
 | `GITHUB_TOKEN` | library | Optional GitHub API token (higher rate limits) |
 | `SEARCHWIRE_LIMIT` | adapter | Default result limit (int; unset = library default) |
 | `SEARCHWIRE_TIMEOUT` | adapter | HTTP client timeout as a Go duration string (e.g. `10s`; unset = library default) |
@@ -154,6 +165,14 @@ searcher := searchwire.New(searchwire.Config{
 	Brave: searchwire.BraveConfig{
 		APIKey: "...", // or read BRAVE_SEARCH_API_KEY
 	},
+	OpenRouter: searchwire.OpenRouterConfig{
+		APIKey: "...", // or read OPENROUTER_API_KEY
+		Model:  "openrouter/auto",
+	},
+	OpenAI: searchwire.OpenAIConfig{
+		APIKey: "...", // or read OPENAI_API_KEY
+		Model:  "gpt-5.6-luna",
+	},
 	GitHub: searchwire.GitHubConfig{
 		Token: "ghp_...", // or read GITHUB_TOKEN
 	},
@@ -179,6 +198,18 @@ using Brave's blocking, single-search
 [Answers endpoint](https://api-dashboard.search.brave.com/documentation/services/answers).
 The initial answer contract returns provider-grounded text; streaming research
 mode and structured citation extraction are not yet exposed.
+
+### LLM answer providers
+
+| Provider | Key env | Model env | Default model | Hosted web tool |
+|----------|---------|-----------|---------------|-----------------|
+| OpenRouter | `OPENROUTER_API_KEY` | `OPENROUTER_MODEL` | `openrouter/auto` | `openrouter:web_search` |
+| OpenAI | `OPENAI_API_KEY` | `OPENAI_MODEL` | `gpt-5.6-luna` | Responses API `web_search` |
+
+OpenRouter can route web-grounded requests to supported OpenAI, Anthropic,
+Google, xAI, and Perplexity model families without adding another Searchwire
+credential. Set `OPENROUTER_MODEL` when deterministic model choice or cost is
+more important than automatic routing.
 
 ### GitHub
 

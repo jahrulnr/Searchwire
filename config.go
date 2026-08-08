@@ -19,6 +19,10 @@ type Config struct {
 
 	Brave  BraveConfig
 	GitHub GitHubConfig
+	// OpenRouter and OpenAI are optional answer providers. They do not add
+	// metasearch sources; a resolved API key enables the answer capability.
+	OpenRouter OpenRouterConfig
+	OpenAI     OpenAIConfig
 	// Google and Custom are future-dev placeholders. They are not read by New()
 	// until their source adapters are implemented.
 	Google GoogleConfig
@@ -37,6 +41,28 @@ type BraveConfig struct {
 	// APIKeyEnv names the environment variable for APIKey
 	// (default BRAVE_SEARCH_API_KEY).
 	APIKeyEnv string
+}
+
+// OpenRouterConfig controls web-grounded answers through OpenRouter.
+type OpenRouterConfig struct {
+	// APIKey overrides APIKeyEnv (default OPENROUTER_API_KEY).
+	APIKey    string
+	APIKeyEnv string
+	// Model overrides ModelEnv (default OPENROUTER_MODEL), then falls back to
+	// openrouter/auto.
+	Model    string
+	ModelEnv string
+}
+
+// OpenAIConfig controls web-grounded answers through the OpenAI Responses API.
+type OpenAIConfig struct {
+	// APIKey overrides APIKeyEnv (default OPENAI_API_KEY).
+	APIKey    string
+	APIKeyEnv string
+	// Model overrides ModelEnv (default OPENAI_MODEL), then falls back to the
+	// cost-focused gpt-5.6-luna model.
+	Model    string
+	ModelEnv string
 }
 
 // GitHubConfig controls the built-in GitHub Search API source.
@@ -110,6 +136,11 @@ type braveSettings struct {
 	apiKey  string
 }
 
+type llmAnswerSettings struct {
+	apiKey string
+	model  string
+}
+
 func (b BraveConfig) resolved() braveSettings {
 	settings := braveSettings{enabled: true}
 	if b.Enabled != nil {
@@ -124,6 +155,41 @@ func (b BraveConfig) resolved() braveSettings {
 		settings.apiKey = strings.TrimSpace(os.Getenv(env))
 	}
 	return settings
+}
+
+func (c OpenRouterConfig) resolved() llmAnswerSettings {
+	return resolveLLMAnswerSettings(
+		c.APIKey, c.APIKeyEnv, "OPENROUTER_API_KEY",
+		c.Model, c.ModelEnv, "OPENROUTER_MODEL", "openrouter/auto",
+	)
+}
+
+func (c OpenAIConfig) resolved() llmAnswerSettings {
+	return resolveLLMAnswerSettings(
+		c.APIKey, c.APIKeyEnv, "OPENAI_API_KEY",
+		c.Model, c.ModelEnv, "OPENAI_MODEL", "gpt-5.6-luna",
+	)
+}
+
+func resolveLLMAnswerSettings(apiKey, apiKeyEnv, defaultAPIKeyEnv, model, modelEnv, defaultModelEnv, defaultModel string) llmAnswerSettings {
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
+		if apiKeyEnv = strings.TrimSpace(apiKeyEnv); apiKeyEnv == "" {
+			apiKeyEnv = defaultAPIKeyEnv
+		}
+		apiKey = strings.TrimSpace(os.Getenv(apiKeyEnv))
+	}
+	model = strings.TrimSpace(model)
+	if model == "" {
+		if modelEnv = strings.TrimSpace(modelEnv); modelEnv == "" {
+			modelEnv = defaultModelEnv
+		}
+		model = strings.TrimSpace(os.Getenv(modelEnv))
+	}
+	if model == "" {
+		model = defaultModel
+	}
+	return llmAnswerSettings{apiKey: apiKey, model: model}
 }
 
 func (g GitHubConfig) resolved() githubSettings {
