@@ -111,5 +111,5 @@ func (b braveAnswerProvider) answer(ctx context.Context, f *fetcher, question st
 	if answer == "" {
 		return "", ErrInvalidProviderResponse
 	}
-	return answer, nil
+	return strings.ReplaceAll(answer, b.apiKey, "[redacted]"), nil
 }

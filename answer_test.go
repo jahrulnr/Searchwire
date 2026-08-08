@@ -107,6 +107,28 @@ func TestAnswerNeverExposesAPIKeyInErrors(t *testing.T) {
 	}
 }
 
+func TestAnswerNeverExposesAPIKeyInSuccessfulResponse(t *testing.T) {
+	const apiKey = "brave_answer_secret_key"
+	client := &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body: io.NopCloser(strings.NewReader(
+				`{"choices":[{"message":{"role":"assistant","content":"key: ` + apiKey + `"}}]}`,
+			)),
+		}, nil
+	})}
+	searcher := New(Config{HTTPClient: client, Brave: BraveConfig{APIKey: apiKey}})
+	answer, err := searcher.Answer(context.Background(), "What is Go?")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(answer.Text, apiKey) || !strings.Contains(answer.Text, "[redacted]") {
+		t.Fatalf("answer = %#v", answer)
+	}
+}
+
 func TestNilSearcherAnswerReturnsError(t *testing.T) {
 	var searcher *Searcher
 	if _, err := searcher.Answer(context.Background(), "What is Go?"); !errors.Is(err, ErrNilSearcher) {
