@@ -336,6 +336,8 @@ func TestAnswerToolRegistrationFollowsResolvedAPIKey(t *testing.T) {
 	t.Setenv(envOpenAIAPIKey, "")
 	t.Setenv(envPerplexityAPIKey, "")
 	t.Setenv(envAnthropicAPIKey, "")
+	t.Setenv(envXAIAPIKey, "")
+	t.Setenv(envXAIAPIKey, "")
 	withoutKey := listToolNames(t, newServer(searchwire.Config{HTTPClient: fixtureClient(t)}, 0))
 	if containsToolName(withoutKey, answerToolName) {
 		t.Fatalf("tools without key = %#v", withoutKey)
@@ -361,6 +363,7 @@ func TestAnswerToolRegistrationSupportsEachLLMProvider(t *testing.T) {
 		"openai":     {OpenAI: searchwire.OpenAIConfig{APIKey: "openai_test_key"}},
 		"perplexity": {Perplexity: searchwire.PerplexityConfig{APIKey: "perplexity_test_key"}},
 		"anthropic":  {Anthropic: searchwire.AnthropicConfig{APIKey: "anthropic_test_key"}},
+		"xai":        {XAI: searchwire.XAIConfig{APIKey: "xai_test_key"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			tools := listToolNames(t, newServer(cfg, 0))

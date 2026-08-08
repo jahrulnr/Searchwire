@@ -34,6 +34,7 @@ const (
 	envOpenAIAPIKey     = "OPENAI_API_KEY"
 	envPerplexityAPIKey = "PERPLEXITY_API_KEY"
 	envAnthropicAPIKey  = "ANTHROPIC_API_KEY"
+	envXAIAPIKey        = "XAI_API_KEY"
 	searchDescription   = "Metasearch the open web across Brave, Startpage, Wikipedia, and GitHub. " +
 		"Returns ranked results with partial failure reporting when some sources fail. " +
 		"May take up to ~10s (or SEARCHWIRE_TIMEOUT) because sources are queried concurrently. " +
@@ -74,7 +75,7 @@ type fetchOutput struct {
 
 type answerInput struct {
 	Question string `json:"question" jsonschema:"the question to answer using current web information"`
-	Provider string `json:"provider,omitempty" jsonschema:"optional configured provider: brave, openrouter, openai, perplexity, or anthropic"`
+	Provider string `json:"provider,omitempty" jsonschema:"optional configured provider: brave, openrouter, openai, perplexity, anthropic, or xai"`
 }
 
 type answerOutput struct {
@@ -374,6 +375,7 @@ func redactSecrets(msg string) string {
 		strings.TrimSpace(os.Getenv(envOpenAIAPIKey)),
 		strings.TrimSpace(os.Getenv(envPerplexityAPIKey)),
 		strings.TrimSpace(os.Getenv(envAnthropicAPIKey)),
+		strings.TrimSpace(os.Getenv(envXAIAPIKey)),
 	}
 	for _, secret := range secrets {
 		if secret == "" {

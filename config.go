@@ -25,6 +25,7 @@ type Config struct {
 	OpenAI     OpenAIConfig
 	Perplexity PerplexityConfig
 	Anthropic  AnthropicConfig
+	XAI        XAIConfig
 	// Google and Custom are future-dev placeholders. They are not read by New()
 	// until their source adapters are implemented.
 	Google GoogleConfig
@@ -85,6 +86,17 @@ type AnthropicConfig struct {
 	APIKeyEnv string
 	// Model overrides ModelEnv (default ANTHROPIC_MODEL), then falls back to
 	// the cost-focused Claude Haiku 4.5 model.
+	Model    string
+	ModelEnv string
+}
+
+// XAIConfig controls web-grounded answers through the xAI Responses API.
+type XAIConfig struct {
+	// APIKey overrides APIKeyEnv (default XAI_API_KEY).
+	APIKey    string
+	APIKeyEnv string
+	// Model overrides ModelEnv (default XAI_MODEL), then falls back to
+	// grok-4.5.
 	Model    string
 	ModelEnv string
 }
@@ -212,6 +224,13 @@ func (c AnthropicConfig) resolved() llmAnswerSettings {
 	return resolveLLMAnswerSettings(
 		c.APIKey, c.APIKeyEnv, "ANTHROPIC_API_KEY",
 		c.Model, c.ModelEnv, "ANTHROPIC_MODEL", "claude-haiku-4-5",
+	)
+}
+
+func (c XAIConfig) resolved() llmAnswerSettings {
+	return resolveLLMAnswerSettings(
+		c.APIKey, c.APIKeyEnv, "XAI_API_KEY",
+		c.Model, c.ModelEnv, "XAI_MODEL", "grok-4.5",
 	)
 }
 

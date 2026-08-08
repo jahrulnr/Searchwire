@@ -96,10 +96,11 @@ Recommended agent workflow: **`searchwire_search` → pick URLs → `searchwire_
 
 `searchwire_answer` is capability-driven: it is absent from MCP tool discovery
 when none of `BRAVE_SEARCH_API_KEY`, `OPENROUTER_API_KEY`, `OPENAI_API_KEY`,
-`PERPLEXITY_API_KEY`, or `ANTHROPIC_API_KEY` is available. Restart the MCP
-process after adding or removing a key so clients receive the updated tool list.
+`PERPLEXITY_API_KEY`, `ANTHROPIC_API_KEY`, or `XAI_API_KEY` is available.
+Restart the MCP process after adding or removing a key so clients receive the
+updated tool list.
 When multiple providers are configured, omit `provider` to use the stable order
-Brave → OpenRouter → OpenAI → Perplexity → Anthropic, or pass a provider
+Brave → OpenRouter → OpenAI → Perplexity → Anthropic → xAI, or pass a provider
 explicitly.
 
 Brave keys must have access to the Answers plan; a Search-only subscription can
@@ -123,6 +124,8 @@ configuration or its model env var.
 | `PERPLEXITY_PRESET` | library | Perplexity Agent API preset (default `low`) |
 | `ANTHROPIC_API_KEY` | library | Optional Anthropic key; enables the `anthropic` answer provider |
 | `ANTHROPIC_MODEL` | library | Anthropic answer model (default `claude-haiku-4-5`) |
+| `XAI_API_KEY` | library | Optional xAI key; enables the `xai` answer provider |
+| `XAI_MODEL` | library | xAI answer model (default `grok-4.5`) |
 | `GITHUB_TOKEN` | library | Optional GitHub API token (higher rate limits) |
 | `SEARCHWIRE_LIMIT` | adapter | Default result limit (int; unset = library default) |
 | `SEARCHWIRE_TIMEOUT` | adapter | HTTP client timeout as a Go duration string (e.g. `10s`; unset = library default) |
@@ -186,6 +189,10 @@ searcher := searchwire.New(searchwire.Config{
 		APIKey: "...", // or read ANTHROPIC_API_KEY
 		Model:  "claude-haiku-4-5",
 	},
+	XAI: searchwire.XAIConfig{
+		APIKey: "...", // or read XAI_API_KEY
+		Model:  "grok-4.5",
+	},
 	GitHub: searchwire.GitHubConfig{
 		Token: "ghp_...", // or read GITHUB_TOKEN
 	},
@@ -220,6 +227,7 @@ mode and structured citation extraction are not yet exposed.
 | OpenAI | `OPENAI_API_KEY` | `OPENAI_MODEL` | `gpt-5.6-luna` | Responses API `web_search` |
 | Perplexity | `PERPLEXITY_API_KEY` | `PERPLEXITY_PRESET` | `low` preset | Agent API web search + fetch |
 | Anthropic | `ANTHROPIC_API_KEY` | `ANTHROPIC_MODEL` | `claude-haiku-4-5` | Messages API web search |
+| xAI | `XAI_API_KEY` | `XAI_MODEL` | `grok-4.5` | Responses API web search |
 
 OpenRouter can route web-grounded requests to supported OpenAI, Anthropic,
 Google, xAI, and Perplexity model families without adding another Searchwire

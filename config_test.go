@@ -76,6 +76,15 @@ func TestAnthropicConfigResolvesDefaultsAndEnvironment(t *testing.T) {
 	}
 }
 
+func TestXAIConfigResolvesDefaultsAndEnvironment(t *testing.T) {
+	t.Setenv("XAI_API_KEY", "xai_test_key")
+	t.Setenv("XAI_MODEL", "")
+	settings := (XAIConfig{}).resolved()
+	if settings.apiKey != "xai_test_key" || settings.model != "grok-4.5" {
+		t.Fatalf("settings = %#v", settings)
+	}
+}
+
 func TestLLMProviderExplicitValuesOverrideEnvironment(t *testing.T) {
 	t.Setenv("CUSTOM_OPENROUTER_KEY", "from-env")
 	openrouter := (OpenRouterConfig{

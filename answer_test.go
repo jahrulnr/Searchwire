@@ -26,6 +26,7 @@ func clearAnswerProviderKeys(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "")
 	t.Setenv("PERPLEXITY_API_KEY", "")
 	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("XAI_API_KEY", "")
 }
 
 func TestAnswerUnavailableWithoutAPIKey(t *testing.T) {
@@ -251,6 +252,44 @@ func TestAnthropicAnswerUsesHostedSearchAndPreservesCitations(t *testing.T) {
 	}
 }
 
+func TestXAIAnswerUsesResponsesWebSearchWithInlineCitations(t *testing.T) {
+	clearAnswerProviderKeys(t)
+	var requestBody struct {
+		Model string `json:"model"`
+		Input []struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"input"`
+		Tools []struct {
+			Type string `json:"type"`
+		} `json:"tools"`
+	}
+	client := &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		if err := json.NewDecoder(r.Body).Decode(&requestBody); err != nil {
+			t.Fatal(err)
+		}
+		if r.Method != http.MethodPost || r.URL.String() != "https://api.x.ai/v1/responses" {
+			t.Fatalf("request = %s %s", r.Method, r.URL)
+		}
+		if r.Header.Get("Authorization") != "Bearer xai_test_key" {
+			t.Fatalf("authorization = %q", r.Header.Get("Authorization"))
+		}
+		return answerJSONResponse(`{"output":[{"type":"web_search_call"},{"type":"message","content":[{"type":"output_text","text":"grounded [[1]](https://example.com)"}]}]}`), nil
+	})}
+	searcher := New(Config{HTTPClient: client, XAI: XAIConfig{APIKey: "xai_test_key"}})
+
+	answer, err := searcher.Answer(context.Background(), "latest news")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requestBody.Model != "grok-4.5" || len(requestBody.Input) != 1 || requestBody.Input[0].Content != "latest news" || len(requestBody.Tools) != 1 || requestBody.Tools[0].Type != "web_search" {
+		t.Fatalf("request body = %#v", requestBody)
+	}
+	if answer.Provider != "xai" || !strings.Contains(answer.Text, "[[1]](https://example.com)") {
+		t.Fatalf("answer = %#v", answer)
+	}
+}
+
 func TestLLMAnswerProvidersNeverExposeAPIKeys(t *testing.T) {
 	for name, testCase := range map[string]struct {
 		provider string
@@ -283,6 +322,13 @@ func TestLLMAnswerProvidersNeverExposeAPIKeys(t *testing.T) {
 			key:      "anthropic_secret_key",
 			config: func(client HTTPClient) Config {
 				return Config{HTTPClient: client, Anthropic: AnthropicConfig{APIKey: "anthropic_secret_key"}}
+			},
+		},
+		"xai": {
+			provider: "xai",
+			key:      "xai_secret_key",
+			config: func(client HTTPClient) Config {
+				return Config{HTTPClient: client, XAI: XAIConfig{APIKey: "xai_secret_key"}}
 			},
 		},
 	} {
