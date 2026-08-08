@@ -24,6 +24,7 @@ type Config struct {
 	OpenRouter OpenRouterConfig
 	OpenAI     OpenAIConfig
 	Perplexity PerplexityConfig
+	Anthropic  AnthropicConfig
 	// Google and Custom are future-dev placeholders. They are not read by New()
 	// until their source adapters are implemented.
 	Google GoogleConfig
@@ -75,6 +76,17 @@ type PerplexityConfig struct {
 	// to Perplexity's cost-focused low preset.
 	Preset    string
 	PresetEnv string
+}
+
+// AnthropicConfig controls web-grounded answers through the Messages API.
+type AnthropicConfig struct {
+	// APIKey overrides APIKeyEnv (default ANTHROPIC_API_KEY).
+	APIKey    string
+	APIKeyEnv string
+	// Model overrides ModelEnv (default ANTHROPIC_MODEL), then falls back to
+	// the cost-focused Claude Haiku 4.5 model.
+	Model    string
+	ModelEnv string
 }
 
 // GitHubConfig controls the built-in GitHub Search API source.
@@ -194,6 +206,13 @@ func (c PerplexityConfig) resolved() perplexitySettings {
 		c.Preset, c.PresetEnv, "PERPLEXITY_PRESET", "low",
 	)
 	return perplexitySettings{apiKey: settings.apiKey, preset: settings.model}
+}
+
+func (c AnthropicConfig) resolved() llmAnswerSettings {
+	return resolveLLMAnswerSettings(
+		c.APIKey, c.APIKeyEnv, "ANTHROPIC_API_KEY",
+		c.Model, c.ModelEnv, "ANTHROPIC_MODEL", "claude-haiku-4-5",
+	)
 }
 
 func resolveLLMAnswerSettings(apiKey, apiKeyEnv, defaultAPIKeyEnv, model, modelEnv, defaultModelEnv, defaultModel string) llmAnswerSettings {

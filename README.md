@@ -95,11 +95,12 @@ searchwire-mcp
 Recommended agent workflow: **`searchwire_search` → pick URLs → `searchwire_fetch`**. Snippets alone are incomplete; fetch promising hits for full content.
 
 `searchwire_answer` is capability-driven: it is absent from MCP tool discovery
-when none of `BRAVE_SEARCH_API_KEY`, `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, or
-`PERPLEXITY_API_KEY` is available. Restart the MCP process after adding or
-removing a key so clients receive the updated tool list. When multiple providers
-are configured, omit `provider` to use the stable order Brave → OpenRouter →
-OpenAI → Perplexity, or pass a provider explicitly.
+when none of `BRAVE_SEARCH_API_KEY`, `OPENROUTER_API_KEY`, `OPENAI_API_KEY`,
+`PERPLEXITY_API_KEY`, or `ANTHROPIC_API_KEY` is available. Restart the MCP
+process after adding or removing a key so clients receive the updated tool list.
+When multiple providers are configured, omit `provider` to use the stable order
+Brave → OpenRouter → OpenAI → Perplexity → Anthropic, or pass a provider
+explicitly.
 
 Brave keys must have access to the Answers plan; a Search-only subscription can
 still produce a provider billing/authorization error. OpenRouter uses its
@@ -120,6 +121,8 @@ configuration or its model env var.
 | `OPENAI_MODEL` | library | OpenAI answer model (default `gpt-5.6-luna`) |
 | `PERPLEXITY_API_KEY` | library | Optional Perplexity key; enables the `perplexity` answer provider |
 | `PERPLEXITY_PRESET` | library | Perplexity Agent API preset (default `low`) |
+| `ANTHROPIC_API_KEY` | library | Optional Anthropic key; enables the `anthropic` answer provider |
+| `ANTHROPIC_MODEL` | library | Anthropic answer model (default `claude-haiku-4-5`) |
 | `GITHUB_TOKEN` | library | Optional GitHub API token (higher rate limits) |
 | `SEARCHWIRE_LIMIT` | adapter | Default result limit (int; unset = library default) |
 | `SEARCHWIRE_TIMEOUT` | adapter | HTTP client timeout as a Go duration string (e.g. `10s`; unset = library default) |
@@ -179,6 +182,10 @@ searcher := searchwire.New(searchwire.Config{
 		APIKey: "...", // or read PERPLEXITY_API_KEY
 		Preset: "low",
 	},
+	Anthropic: searchwire.AnthropicConfig{
+		APIKey: "...", // or read ANTHROPIC_API_KEY
+		Model:  "claude-haiku-4-5",
+	},
 	GitHub: searchwire.GitHubConfig{
 		Token: "ghp_...", // or read GITHUB_TOKEN
 	},
@@ -212,6 +219,7 @@ mode and structured citation extraction are not yet exposed.
 | OpenRouter | `OPENROUTER_API_KEY` | `OPENROUTER_MODEL` | `openrouter/auto` | `openrouter:web_search` |
 | OpenAI | `OPENAI_API_KEY` | `OPENAI_MODEL` | `gpt-5.6-luna` | Responses API `web_search` |
 | Perplexity | `PERPLEXITY_API_KEY` | `PERPLEXITY_PRESET` | `low` preset | Agent API web search + fetch |
+| Anthropic | `ANTHROPIC_API_KEY` | `ANTHROPIC_MODEL` | `claude-haiku-4-5` | Messages API web search |
 
 OpenRouter can route web-grounded requests to supported OpenAI, Anthropic,
 Google, xAI, and Perplexity model families without adding another Searchwire

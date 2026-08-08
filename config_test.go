@@ -67,6 +67,15 @@ func TestPerplexityConfigResolvesDefaultsAndEnvironment(t *testing.T) {
 	}
 }
 
+func TestAnthropicConfigResolvesDefaultsAndEnvironment(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "anthropic_test_key")
+	t.Setenv("ANTHROPIC_MODEL", "")
+	settings := (AnthropicConfig{}).resolved()
+	if settings.apiKey != "anthropic_test_key" || settings.model != "claude-haiku-4-5" {
+		t.Fatalf("settings = %#v", settings)
+	}
+}
+
 func TestLLMProviderExplicitValuesOverrideEnvironment(t *testing.T) {
 	t.Setenv("CUSTOM_OPENROUTER_KEY", "from-env")
 	openrouter := (OpenRouterConfig{

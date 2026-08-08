@@ -15,6 +15,7 @@ const (
 	AnswerProviderOpenRouter = "openrouter"
 	AnswerProviderOpenAI     = "openai"
 	AnswerProviderPerplexity = "perplexity"
+	AnswerProviderAnthropic  = "anthropic"
 )
 
 type answerProvider interface {
@@ -96,7 +97,7 @@ func (s *Searcher) AnswerWithOptions(ctx context.Context, question string, optio
 }
 
 func answerProvidersFromConfig(cfg Config) []answerProvider {
-	providers := make([]answerProvider, 0, 4)
+	providers := make([]answerProvider, 0, 5)
 	if settings := cfg.Brave.resolved(); settings.apiKey != "" {
 		providers = append(providers, braveAnswerProvider{apiKey: settings.apiKey})
 	}
@@ -108,6 +109,9 @@ func answerProvidersFromConfig(cfg Config) []answerProvider {
 	}
 	if settings := cfg.Perplexity.resolved(); settings.apiKey != "" {
 		providers = append(providers, perplexityAnswerProvider{apiKey: settings.apiKey, preset: settings.preset})
+	}
+	if settings := cfg.Anthropic.resolved(); settings.apiKey != "" {
+		providers = append(providers, anthropicAnswerProvider{apiKey: settings.apiKey, model: settings.model})
 	}
 	return providers
 }

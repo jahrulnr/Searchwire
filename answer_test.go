@@ -25,6 +25,7 @@ func clearAnswerProviderKeys(t *testing.T) {
 	t.Setenv("OPENROUTER_API_KEY", "")
 	t.Setenv("OPENAI_API_KEY", "")
 	t.Setenv("PERPLEXITY_API_KEY", "")
+	t.Setenv("ANTHROPIC_API_KEY", "")
 }
 
 func TestAnswerUnavailableWithoutAPIKey(t *testing.T) {
@@ -203,6 +204,53 @@ func TestPerplexityAnswerUsesLowCostAgentPreset(t *testing.T) {
 	}
 }
 
+func TestAnthropicAnswerUsesHostedSearchAndPreservesCitations(t *testing.T) {
+	clearAnswerProviderKeys(t)
+	var requestBody struct {
+		Model     string `json:"model"`
+		MaxTokens int    `json:"max_tokens"`
+		Messages  []struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"messages"`
+		Tools []struct {
+			Type    string `json:"type"`
+			Name    string `json:"name"`
+			MaxUses int    `json:"max_uses"`
+		} `json:"tools"`
+	}
+	client := &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		if err := json.NewDecoder(r.Body).Decode(&requestBody); err != nil {
+			t.Fatal(err)
+		}
+		if r.Method != http.MethodPost || r.URL.String() != "https://api.anthropic.com/v1/messages" {
+			t.Fatalf("request = %s %s", r.Method, r.URL)
+		}
+		if r.Header.Get("X-Api-Key") != "anthropic_test_key" || r.Header.Get("Anthropic-Version") != "2023-06-01" {
+			t.Fatalf("headers = %#v", r.Header)
+		}
+		return answerJSONResponse(`{"stop_reason":"end_turn","content":[{"type":"text","text":"grounded answer","citations":[{"type":"web_search_result_location","url":"https://example.com/source","title":"Example source"},{"type":"web_search_result_location","url":"javascript:alert(1)","title":"Unsafe"}]}]}`), nil
+	})}
+	searcher := New(Config{HTTPClient: client, Anthropic: AnthropicConfig{APIKey: "anthropic_test_key"}})
+
+	answer, err := searcher.Answer(context.Background(), "latest news")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requestBody.Model != "claude-haiku-4-5" || requestBody.MaxTokens != 2048 || len(requestBody.Messages) != 1 || requestBody.Messages[0].Content != "latest news" {
+		t.Fatalf("request body = %#v", requestBody)
+	}
+	if len(requestBody.Tools) != 1 || requestBody.Tools[0].Type != "web_search_20250305" || requestBody.Tools[0].Name != "web_search" || requestBody.Tools[0].MaxUses != 1 {
+		t.Fatalf("tools = %#v", requestBody.Tools)
+	}
+	if answer.Provider != "anthropic" || !strings.Contains(answer.Text, "grounded answer") || !strings.Contains(answer.Text, "[Example source](https://example.com/source)") {
+		t.Fatalf("answer = %#v", answer)
+	}
+	if strings.Contains(answer.Text, "javascript:") {
+		t.Fatalf("unsafe citation retained: %#v", answer)
+	}
+}
+
 func TestLLMAnswerProvidersNeverExposeAPIKeys(t *testing.T) {
 	for name, testCase := range map[string]struct {
 		provider string
@@ -228,6 +276,13 @@ func TestLLMAnswerProvidersNeverExposeAPIKeys(t *testing.T) {
 			key:      "perplexity_secret_key",
 			config: func(client HTTPClient) Config {
 				return Config{HTTPClient: client, Perplexity: PerplexityConfig{APIKey: "perplexity_secret_key"}}
+			},
+		},
+		"anthropic": {
+			provider: "anthropic",
+			key:      "anthropic_secret_key",
+			config: func(client HTTPClient) Config {
+				return Config{HTTPClient: client, Anthropic: AnthropicConfig{APIKey: "anthropic_secret_key"}}
 			},
 		},
 	} {
