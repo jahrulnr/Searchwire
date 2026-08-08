@@ -34,6 +34,14 @@ func main() {
 		log.Printf("source %s failed: %s", sourceErr.Source, sourceErr.Error)
 	}
 
+	if searcher.CanAnswer() {
+		answer, err := searcher.Answer(context.Background(), "What changed in Go recently?")
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println(answer.Provider, answer.Text)
+	}
+
 	if len(resp.Results) > 0 {
 		page, err := searcher.Fetch(context.Background(), resp.Results[0].URL)
 		if err != nil {
@@ -82,8 +90,17 @@ searchwire-mcp
 |------|-------|--------|
 | `searchwire_search` | `{ "query": string, "limit"?: number }` | Searchwire response JSON (`query`, `results`, `errors`) |
 | `searchwire_fetch` | `{ "url": string, "max_bytes"?: number }` | Page JSON (`url`, `finalUrl`, `statusCode`, `contentType`, `title`, `text`, `truncated`, `bytes`) |
+| `searchwire_answer` | `{ "question": string }` | Web-grounded answer JSON (`question`, `answer`, `provider`); registered only when an answer-provider key is available |
 
 Recommended agent workflow: **`searchwire_search` → pick URLs → `searchwire_fetch`**. Snippets alone are incomplete; fetch promising hits for full content.
+
+`searchwire_answer` is capability-driven: it is absent from MCP tool discovery
+when no answer provider is configured. With the current Brave implementation,
+setting `BRAVE_SEARCH_API_KEY` before starting `searchwire-mcp` enables it.
+Restart the MCP process after adding or removing the key so clients receive the
+updated tool list. The key must have access to Brave's Answers plan; having a
+Search-only subscription can still produce a provider billing/authorization
+error when the tool is called.
 
 ### Environment
 
@@ -156,6 +173,12 @@ key is present, Searchwire replaces it with the official
 [Brave Web Search API](https://api-dashboard.search.brave.com/app/documentation/web-search/get-started)
 under the same `brave` source name; it does not query both or double-count
 duplicate results.
+
+The same resolved key enables `Searcher.CanAnswer()` and `Searcher.Answer()`
+using Brave's blocking, single-search
+[Answers endpoint](https://api-dashboard.search.brave.com/documentation/services/answers).
+The initial answer contract returns provider-grounded text; streaming research
+mode and structured citation extraction are not yet exposed.
 
 ### GitHub
 
