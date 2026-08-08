@@ -23,6 +23,7 @@ const (
 	fallbackVersion   = "0.1.0"
 	searchToolName    = "searchwire_search"
 	fetchToolName     = "searchwire_fetch"
+	answerToolName    = "searchwire_answer"
 	maxErrorLen       = 240
 	envLimit          = "SEARCHWIRE_LIMIT"
 	envTimeout        = "SEARCHWIRE_TIMEOUT"
@@ -36,6 +37,8 @@ const (
 	fetchDescription = "Fetch one http(s) URL and return readable text (HTML stripped to title + visible text, " +
 		"or plain text as-is). Prefer searchwire_search first, then fetch promising result URLs. " +
 		"Not a full browser: no JavaScript rendering. Oversized bodies are truncated with truncated=true."
+	answerDescription = "Answer one question using an optional web-grounded answer provider. " +
+		"This tool is only exposed when a provider API key is configured."
 )
 
 type searchInput struct {
@@ -65,6 +68,16 @@ type fetchOutput struct {
 	Bytes       int    `json:"bytes"`
 }
 
+type answerInput struct {
+	Question string `json:"question" jsonschema:"the question to answer using current web information"`
+}
+
+type answerOutput struct {
+	Question string `json:"question"`
+	Answer   string `json:"answer"`
+	Provider string `json:"provider"`
+}
+
 func main() {
 	log.SetOutput(os.Stderr)
 	log.SetFlags(0)
@@ -92,6 +105,12 @@ func newServer(cfg searchwire.Config, defaultMaxBytes int64) *mcp.Server {
 		Name:        fetchToolName,
 		Description: fetchDescription,
 	}, makeFetchHandler(cfg, defaultMaxBytes))
+	if searchwire.New(cfg).CanAnswer() {
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        answerToolName,
+			Description: answerDescription,
+		}, makeAnswerHandler(cfg))
+	}
 	return server
 }
 
@@ -122,6 +141,25 @@ func makeFetchHandler(base searchwire.Config, defaultMaxBytes int64) mcp.ToolHan
 				IsError: true,
 				Content: []mcp.Content{&mcp.TextContent{Text: sanitizeError(err.Error())}},
 			}, fetchOutput{}, nil
+		}
+		text, marshalErr := json.MarshalIndent(out, "", "  ")
+		if marshalErr != nil {
+			return nil, out, nil
+		}
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: string(text)}},
+		}, out, nil
+	}
+}
+
+func makeAnswerHandler(base searchwire.Config) mcp.ToolHandlerFor[answerInput, answerOutput] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, input answerInput) (*mcp.CallToolResult, answerOutput, error) {
+		out, err := runAnswer(ctx, base, input)
+		if err != nil {
+			return &mcp.CallToolResult{
+				IsError: true,
+				Content: []mcp.Content{&mcp.TextContent{Text: sanitizeError(err.Error())}},
+			}, answerOutput{}, nil
 		}
 		text, marshalErr := json.MarshalIndent(out, "", "  ")
 		if marshalErr != nil {
@@ -173,6 +211,18 @@ func runFetch(ctx context.Context, base searchwire.Config, defaultMaxBytes int64
 		Text:        result.Text,
 		Truncated:   result.Truncated,
 		Bytes:       result.Bytes,
+	}, nil
+}
+
+func runAnswer(ctx context.Context, base searchwire.Config, input answerInput) (answerOutput, error) {
+	answer, err := searchwire.New(base).Answer(ctx, input.Question)
+	if err != nil {
+		return answerOutput{}, sanitizeAnswerErr(err)
+	}
+	return answerOutput{
+		Question: answer.Question,
+		Answer:   answer.Text,
+		Provider: answer.Provider,
 	}, nil
 }
 
@@ -268,6 +318,20 @@ func sanitizeFetchErr(err error) error {
 			Status:     httpErr.Status,
 			Body:       sanitizeError(httpErr.Body),
 		}
+	}
+	return errors.New(sanitizeError(err.Error()))
+}
+
+func sanitizeAnswerErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	switch {
+	case errors.Is(err, searchwire.ErrEmptyQuestion),
+		errors.Is(err, searchwire.ErrAnswerUnavailable),
+		errors.Is(err, searchwire.ErrInvalidProviderResponse),
+		errors.Is(err, searchwire.ErrNilSearcher):
+		return err
 	}
 	return errors.New(sanitizeError(err.Error()))
 }

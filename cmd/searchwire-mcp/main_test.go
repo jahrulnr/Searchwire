@@ -323,10 +323,107 @@ func TestConfigFromEnv(t *testing.T) {
 }
 
 func TestNewServerRegistersTools(t *testing.T) {
+	t.Setenv(envBraveAPIKey, "")
 	server := newServer(searchwire.Config{HTTPClient: fixtureClient(t)}, 0)
 	if server == nil {
 		t.Fatal("nil server")
 	}
+}
+
+func TestAnswerToolRegistrationFollowsResolvedAPIKey(t *testing.T) {
+	t.Setenv(envBraveAPIKey, "")
+	withoutKey := listToolNames(t, newServer(searchwire.Config{HTTPClient: fixtureClient(t)}, 0))
+	if containsToolName(withoutKey, answerToolName) {
+		t.Fatalf("tools without key = %#v", withoutKey)
+	}
+
+	withKey := listToolNames(t, newServer(searchwire.Config{
+		HTTPClient: fixtureClient(t),
+		Brave:      searchwire.BraveConfig{APIKey: "brave_test_key"},
+	}, 0))
+	if !containsToolName(withKey, answerToolName) {
+		t.Fatalf("tools with key = %#v", withKey)
+	}
+}
+
+func TestAnswerToolRegistrationUsesCustomAPIKeyEnv(t *testing.T) {
+	t.Setenv(envBraveAPIKey, "")
+	t.Setenv("SEARCHWIRE_TEST_BRAVE_KEY", "brave_test_key")
+	tools := listToolNames(t, newServer(searchwire.Config{
+		HTTPClient: fixtureClient(t),
+		Brave: searchwire.BraveConfig{
+			APIKeyEnv: "SEARCHWIRE_TEST_BRAVE_KEY",
+		},
+	}, 0))
+	if !containsToolName(tools, answerToolName) {
+		t.Fatalf("tools = %#v", tools)
+	}
+}
+
+func TestAnswerHappyPath(t *testing.T) {
+	client := &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path != "/res/v1/chat/completions" {
+			t.Fatalf("path = %q", r.URL.Path)
+		}
+		return okJSON(readFixture(t, "brave-answer.json")), nil
+	})}
+	cfg := searchwire.Config{
+		HTTPClient: client,
+		Brave:      searchwire.BraveConfig{APIKey: "brave_test_key"},
+	}
+	out, err := runAnswer(context.Background(), cfg, answerInput{Question: "What is Go?"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Question != "What is Go?" || out.Answer != "Go is an open source programming language." || out.Provider != "brave" {
+		t.Fatalf("out = %#v", out)
+	}
+
+	handler := makeAnswerHandler(cfg)
+	result, structured, err := handler(context.Background(), nil, answerInput{Question: "What is Go?"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result == nil || result.IsError || structured.Answer == "" {
+		t.Fatalf("result = %#v structured = %#v", result, structured)
+	}
+}
+
+func listToolNames(t *testing.T, server *mcp.Server) []string {
+	t.Helper()
+	ctx := context.Background()
+	clientTransport, serverTransport := mcp.NewInMemoryTransports()
+	serverSession, err := server.Connect(ctx, serverTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = serverSession.Close() })
+
+	client := mcp.NewClient(&mcp.Implementation{Name: "searchwire-test", Version: "0.0.0"}, nil)
+	clientSession, err := client.Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = clientSession.Close() })
+
+	listed, err := clientSession.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := make([]string, len(listed.Tools))
+	for i, tool := range listed.Tools {
+		names[i] = tool.Name
+	}
+	return names
+}
+
+func containsToolName(names []string, target string) bool {
+	for _, name := range names {
+		if name == target {
+			return true
+		}
+	}
+	return false
 }
 
 func TestFetchHappyHTML(t *testing.T) {
