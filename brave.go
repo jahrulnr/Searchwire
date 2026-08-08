@@ -12,6 +12,8 @@ import (
 	"golang.org/x/net/html"
 )
 
+const braveAPIMaxCount = 20
+
 type braveSource struct {
 	apiKey string
 }
@@ -50,7 +52,7 @@ func (b braveSource) searchAPI(ctx context.Context, f *fetcher, query string, li
 	}
 	params := endpoint.Query()
 	params.Set("q", query)
-	params.Set("count", strconv.Itoa(limit))
+	params.Set("count", strconv.Itoa(min(limit, braveAPIMaxCount)))
 	endpoint.RawQuery = params.Encode()
 
 	headers := http.Header{"X-Subscription-Token": []string{b.apiKey}}

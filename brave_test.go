@@ -88,6 +88,25 @@ func TestBraveAPISearchRequestContract(t *testing.T) {
 	}
 }
 
+func TestBraveAPIClampsCountToProviderMaximum(t *testing.T) {
+	var count string
+	client := &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		count = r.URL.Query().Get("count")
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"web":{"results":[]}}`)),
+		}, nil
+	})}
+	f := newFetcher(client, defaultUserAgent, defaultMaxResponseBytes)
+	if _, err := (braveSource{apiKey: "brave_test_key"}).search(context.Background(), f, "Go", 50); err != nil {
+		t.Fatal(err)
+	}
+	if count != "20" {
+		t.Fatalf("count = %q", count)
+	}
+}
+
 func TestBraveAPIRejectsWrongContentType(t *testing.T) {
 	client := &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
 		return &http.Response{
