@@ -27,16 +27,6 @@ type openAIAnswerTool struct {
 	Type string `json:"type"`
 }
 
-type openAIAnswerResponse struct {
-	Output []struct {
-		Type    string `json:"type"`
-		Content []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"content"`
-	} `json:"output"`
-}
-
 func (p openAIAnswerProvider) answer(ctx context.Context, f *fetcher, question string) (string, error) {
 	payload, err := json.Marshal(openAIAnswerRequest{
 		Model: p.model,
@@ -52,24 +42,9 @@ func (p openAIAnswerProvider) answer(ctx context.Context, f *fetcher, question s
 	if err != nil {
 		return "", redactErrorSecret(err, p.apiKey)
 	}
-	var response openAIAnswerResponse
-	if err := json.Unmarshal(body, &response); err != nil {
-		return "", fmt.Errorf("%w: parse openai answer: %v", ErrInvalidProviderResponse, err)
-	}
-	parts := make([]string, 0, 1)
-	for _, output := range response.Output {
-		if output.Type != "message" {
-			continue
-		}
-		for _, content := range output.Content {
-			if content.Type == "output_text" && strings.TrimSpace(content.Text) != "" {
-				parts = append(parts, strings.TrimSpace(content.Text))
-			}
-		}
-	}
-	answer := strings.TrimSpace(strings.Join(parts, "\n\n"))
-	if answer == "" {
-		return "", ErrInvalidProviderResponse
+	answer, err := parseResponsesAnswer(body, AnswerProviderOpenAI)
+	if err != nil {
+		return "", err
 	}
 	return strings.ReplaceAll(answer, p.apiKey, "[redacted]"), nil
 }
