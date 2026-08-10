@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"unicode/utf8"
 
 	"golang.org/x/net/html"
 )
@@ -26,14 +27,18 @@ type FetchResult struct {
 
 // Fetch retrieves one http(s) URL and returns readable text.
 // HTML responses are stripped to title + visible text. Plain text is returned
-// as-is. Bodies larger than maxBytes (or Config.MaxResponseBytes) are truncated
-// with Truncated set. This is a local agent helper, not a hardened proxy.
+// as-is. Extracted text — not raw HTML — is capped at Config.MaxResponseBytes;
+// Truncated reports when the returned text was cut to fit. Raw HTML downloads
+// are additionally bounded by an internal hard ceiling (defaultMaxRawResponseBytes).
+// This is a local agent helper, not a hardened proxy.
 func (s *Searcher) Fetch(ctx context.Context, rawURL string) (*FetchResult, error) {
 	return s.FetchWithLimit(ctx, rawURL, 0)
 }
 
-// FetchWithLimit is Fetch with an optional per-call byte budget.
-// When maxBytes <= 0, Config.MaxResponseBytes is used.
+// FetchWithLimit is Fetch with an optional per-call byte budget for the
+// extracted readable text. When maxBytes <= 0, Config.MaxResponseBytes is used.
+// The budget applies to the returned text, not the raw HTML download, so HTML
+// overhead (markup, scripts, styles) does not consume the caller's budget.
 func (s *Searcher) FetchWithLimit(ctx context.Context, rawURL string, maxBytes int64) (*FetchResult, error) {
 	if s == nil {
 		return nil, ErrNilSearcher
@@ -47,12 +52,19 @@ func (s *Searcher) FetchWithLimit(ctx context.Context, rawURL string, maxBytes i
 		return nil, err
 	}
 
-	limit := s.maxResponseSize
-	if maxBytes > 0 && (limit <= 0 || maxBytes < limit) {
-		limit = maxBytes
+	// Budget for the extracted text result (what the caller wants).
+	textLimit := s.maxResponseSize
+	if maxBytes > 0 && (textLimit <= 0 || maxBytes < textLimit) {
+		textLimit = maxBytes
 	}
-	if limit <= 0 {
-		limit = defaultMaxResponseBytes
+	if textLimit <= 0 {
+		textLimit = defaultMaxResponseBytes
+	}
+
+	// Hard ceiling for the raw HTML/plain-text download (safety: memory + bandwidth).
+	rawLimit := s.maxRawResponseSize
+	if rawLimit <= 0 {
+		rawLimit = defaultMaxRawResponseBytes
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, canonical, nil)
@@ -68,14 +80,14 @@ func (s *Searcher) FetchWithLimit(ctx context.Context, rawURL string, maxBytes i
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+	// Read the full body up to the hard raw ceiling. +1 lets us detect and
+	// report oversize responses cleanly rather than silently mis-parsing.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, rawLimit+1))
 	if err != nil {
 		return nil, fmt.Errorf("searchwire: read response: %w", err)
 	}
-	truncated := false
-	if int64(len(body)) > limit {
-		body = body[:limit]
-		truncated = true
+	if int64(len(body)) > rawLimit {
+		return nil, fmt.Errorf("%w: raw response exceeds hard ceiling (%d bytes)", ErrResponseTooLarge, rawLimit)
 	}
 
 	contentType := resp.Header.Get("Content-Type")
@@ -97,7 +109,11 @@ func (s *Searcher) FetchWithLimit(ctx context.Context, rawURL string, maxBytes i
 		finalURL = resp.Request.URL.String()
 	}
 
+	// Extract the readable text from the complete body, THEN apply the caller's
+	// budget to the extracted text. This keeps small budgets useful: a 5 KB
+	// budget now yields 5 KB of real content instead of a fragment of <head>.
 	title, text := extractFetchText(mediaType, body)
+	text, truncated := truncateRunes(text, textLimit)
 	return &FetchResult{
 		URL:         canonical,
 		FinalURL:    finalURL,
@@ -106,8 +122,32 @@ func (s *Searcher) FetchWithLimit(ctx context.Context, rawURL string, maxBytes i
 		Title:       title,
 		Text:        text,
 		Truncated:   truncated,
-		Bytes:       len(body),
+		Bytes:       len(text),
 	}, nil
+}
+
+// truncateRunes cuts value to at most limit runes (counting user-perceived
+// characters rather than bytes keeps CJK/emoji natural) on a rune boundary.
+// The limit is interpreted as bytes for the common ASCII-heavy web case:
+// because rune count <= byte count, truncating by runes never exceeds the
+// byte budget for byte-based callers while avoiding mid-rune corruption.
+func truncateRunes(value string, limit int64) (string, bool) {
+	if limit <= 0 || int64(len(value)) <= limit {
+		return value, false
+	}
+	// Fast path: the byte length exceeds the limit; cut at a rune boundary at
+	// or before limit bytes so we never split a UTF-8 sequence.
+	if !utf8.ValidString(value) {
+		return string([]rune(value)[:limit]), true
+	}
+	cut := 0
+	for i := range value {
+		if int64(i) > limit {
+			break
+		}
+		cut = i
+	}
+	return value[:cut], true
 }
 
 func validateFetchURL(raw string) (string, error) {

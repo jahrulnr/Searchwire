@@ -41,7 +41,8 @@ const (
 		"After searching, use searchwire_fetch on promising URLs for full page text."
 	fetchDescription = "Fetch one http(s) URL and return readable text (HTML stripped to title + visible text, " +
 		"or plain text as-is). Prefer searchwire_search first, then fetch promising result URLs. " +
-		"Not a full browser: no JavaScript rendering. Oversized bodies are truncated with truncated=true."
+		"Not a full browser: no JavaScript rendering. max_bytes caps the length of the returned " +
+		"readable text (not the raw HTML download); over-limit text is truncated with truncated=true."
 	answerDescription = "Answer one question using an optional web-grounded answer provider. " +
 		"This tool is only exposed when a provider API key is configured."
 )
@@ -59,7 +60,7 @@ type searchOutput struct {
 
 type fetchInput struct {
 	URL      string `json:"url" jsonschema:"absolute http or https URL to fetch"`
-	MaxBytes *int64 `json:"max_bytes,omitempty" jsonschema:"optional max response bytes; capped by adapter/library limit"`
+	MaxBytes *int64 `json:"max_bytes,omitempty" jsonschema:"optional budget for the returned readable text (bytes); capped by adapter/library limit"`
 }
 
 type fetchOutput struct {
@@ -70,7 +71,7 @@ type fetchOutput struct {
 	Title       string `json:"title,omitempty"`
 	Text        string `json:"text"`
 	Truncated   bool   `json:"truncated"`
-	Bytes       int    `json:"bytes"`
+	Bytes       int    `json:"bytes"` // byte length of the returned Text (after extraction)
 }
 
 type answerInput struct {
