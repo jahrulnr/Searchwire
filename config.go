@@ -14,8 +14,11 @@ type Config struct {
 	HTTPClient       HTTPClient
 	UserAgent        string
 	Limit            int
-	MaxResponseBytes int64
-	Timeout          time.Duration
+	MaxResponseBytes int64 // budget for extracted readable text (per fetch)
+	// MaxRawResponseBytes is the hard safety ceiling on the raw HTML/plaintext
+	// download, independent of the caller text budget.
+	MaxRawResponseBytes int64
+	Timeout             time.Duration
 
 	Brave  BraveConfig
 	GitHub GitHubConfig
@@ -157,6 +160,9 @@ func (c Config) withDefaults() Config {
 	}
 	if c.MaxResponseBytes <= 0 {
 		c.MaxResponseBytes = defaultMaxResponseBytes
+	}
+	if c.MaxRawResponseBytes <= 0 {
+		c.MaxRawResponseBytes = defaultMaxRawResponseBytes
 	}
 	return c
 }

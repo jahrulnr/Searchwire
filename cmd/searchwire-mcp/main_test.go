@@ -555,7 +555,7 @@ func TestFetchMaxBytesTruncate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !out.Truncated || out.Bytes != 20 {
+	if !out.Truncated || out.Bytes != 20 || out.Text != "zzzzzzzz\n[truncated]" {
 		t.Fatalf("out = %#v", out)
 	}
 }

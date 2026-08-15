@@ -8,10 +8,17 @@ import (
 )
 
 const (
-	defaultLimit            = 10
-	defaultTimeout          = 10 * time.Second
-	defaultMaxResponseBytes = 2 << 20
-	defaultUserAgent        = "searchwire/0 (+https://github.com/jahrulnr/searchwire)"
+	defaultLimit     = 10
+	defaultTimeout   = 10 * time.Second
+	defaultUserAgent = "searchwire/0 (+https://github.com/jahrulnr/searchwire)"
+	// defaultMaxResponseBytes caps the extracted readable text returned by
+	// Fetch. Callers usually want the text, not the raw HTML that produced it.
+	defaultMaxResponseBytes = 2 << 20 // 2 MiB of extracted text
+	// defaultMaxRawResponseBytes is a hard safety ceiling on the raw HTML /
+	// plaintext body actually downloaded from the server. Callers do not
+	// configure this in normal use; it exists to prevent runaway downloads
+	// regardless of how large Config.MaxResponseBytes may be.
+	defaultMaxRawResponseBytes = 10 << 20 // 10 MiB raw download
 )
 
 // HTTPClient is satisfied by *http.Client and lightweight test doubles.
@@ -21,12 +28,13 @@ type HTTPClient interface {
 
 // Searcher fans out to built-in sources, merges duplicates, and ranks results.
 type Searcher struct {
-	httpClient      HTTPClient
-	userAgent       string
-	limit           int
-	maxResponseSize int64
-	sources         []source
-	answerers       []answerProvider
+	httpClient         HTTPClient
+	userAgent          string
+	limit              int
+	maxResponseSize    int64 // cap on extracted text returned by Fetch
+	maxRawResponseSize int64 // hard cap on raw HTML/plaintext download
+	sources            []source
+	answerers          []answerProvider
 }
 
 // New returns a Searcher configured by cfg. Use DefaultConfig() or the zero
@@ -34,12 +42,13 @@ type Searcher struct {
 func New(cfg Config) *Searcher {
 	cfg = cfg.withDefaults()
 	return &Searcher{
-		httpClient:      cfg.HTTPClient,
-		userAgent:       cfg.UserAgent,
-		limit:           cfg.Limit,
-		maxResponseSize: cfg.MaxResponseBytes,
-		sources:         sourcesFromConfig(cfg),
-		answerers:       answerProvidersFromConfig(cfg),
+		httpClient:         cfg.HTTPClient,
+		userAgent:          cfg.UserAgent,
+		limit:              cfg.Limit,
+		maxResponseSize:    cfg.MaxResponseBytes,
+		maxRawResponseSize: cfg.MaxRawResponseBytes,
+		sources:            sourcesFromConfig(cfg),
+		answerers:          answerProvidersFromConfig(cfg),
 	}
 }
 
@@ -76,7 +85,7 @@ func (s *Searcher) Search(ctx context.Context, query string) (*Response, error) 
 	ch := make(chan sourceOutcome, len(s.sources))
 	for i, src := range s.sources {
 		go func(index int, src source) {
-			fetcher := newFetcher(s.httpClient, s.userAgent, s.maxResponseSize)
+			fetcher := newFetcher(s.httpClient, s.userAgent, s.maxRawResponseSize)
 			results, err := src.search(ctx, fetcher, query, s.limit)
 			ch <- sourceOutcome{index: index, name: src.name(), results: results, err: err}
 		}(i, src)

@@ -110,6 +110,8 @@ func TestFetchRejectsBinaryContentType(t *testing.T) {
 }
 
 func TestFetchTruncatesOversize(t *testing.T) {
+	// Budget now applies to the extracted text, not the raw download. A 100-byte
+	// plain-text body with a 50-byte text budget yields 50 bytes of text.
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		return &http.Response{
 			StatusCode: 200,
@@ -123,8 +125,8 @@ func TestFetchTruncatesOversize(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !result.Truncated || result.Bytes != 50 {
-		t.Fatalf("result = %#v", result)
+	if !result.Truncated || result.Bytes != 50 || len(result.Text) != 50 {
+		t.Fatalf("result = %#v, len(text)=%d", result, len(result.Text))
 	}
 }
 
@@ -152,6 +154,36 @@ func TestFetchNilSearcher(t *testing.T) {
 	_, err := s.Fetch(context.Background(), "https://example.com")
 	if !errors.Is(err, ErrNilSearcher) {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestFetchBudgetDoesNotConsumeHTMLOverhead(t *testing.T) {
+	// Regression for the truncation-ordering bug: a small max_bytes must yield
+	// that much readable text, even when the raw HTML is far larger than the budget.
+	const payload = "Readable paragraph content that must survive the full-html pass."
+	body := "<!doctype html><html><head><title>Big Head</title><style>" + strings.Repeat("x", 2048) +
+		"</style></head><body><p>" + strings.Repeat(payload+" ", 40) + "</p></body></html>"
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: 200,
+			Status:     "200 OK",
+			Header:     http.Header{"Content-Type": []string{"text/html; charset=utf-8"}},
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    r,
+		}, nil
+	})}
+	result, err := New(Config{HTTPClient: client, MaxResponseBytes: 120}).Fetch(context.Background(), "https://example.com/page")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Title != "Big Head" {
+		t.Fatalf("title = %q", result.Title)
+	}
+	if !strings.Contains(result.Text, "Readable paragraph content") {
+		t.Fatalf("expected readable text, got %q", result.Text)
+	}
+	if !result.Truncated || len(result.Text) != 120 {
+		t.Fatalf("expected 120-byte truncated text, got len=%d truncated=%v", len(result.Text), result.Truncated)
 	}
 }
 
