@@ -51,6 +51,9 @@ type BraveConfig struct {
 
 // OpenRouterConfig controls web-grounded answers through OpenRouter.
 type OpenRouterConfig struct {
+	// Enabled explicitly enables or disables the provider. When set to false,
+	// env var fallback is skipped. nil means default (enabled if key resolves).
+	Enabled *bool
 	// APIKey overrides APIKeyEnv (default OPENROUTER_API_KEY).
 	APIKey    string
 	APIKeyEnv string
@@ -62,6 +65,9 @@ type OpenRouterConfig struct {
 
 // OpenAIConfig controls web-grounded answers through the OpenAI Responses API.
 type OpenAIConfig struct {
+	// Enabled explicitly enables or disables the provider. When set to false,
+	// env var fallback is skipped. nil means default (enabled if key resolves).
+	Enabled *bool
 	// APIKey overrides APIKeyEnv (default OPENAI_API_KEY).
 	APIKey    string
 	APIKeyEnv string
@@ -73,6 +79,9 @@ type OpenAIConfig struct {
 
 // PerplexityConfig controls web-grounded answers through the Agent API.
 type PerplexityConfig struct {
+	// Enabled explicitly enables or disables the provider. When set to false,
+	// env var fallback is skipped. nil means default (enabled if key resolves).
+	Enabled *bool
 	// APIKey overrides APIKeyEnv (default PERPLEXITY_API_KEY).
 	APIKey    string
 	APIKeyEnv string
@@ -84,6 +93,9 @@ type PerplexityConfig struct {
 
 // AnthropicConfig controls web-grounded answers through the Messages API.
 type AnthropicConfig struct {
+	// Enabled explicitly enables or disables the provider. When set to false,
+	// env var fallback is skipped. nil means default (enabled if key resolves).
+	Enabled *bool
 	// APIKey overrides APIKeyEnv (default ANTHROPIC_API_KEY).
 	APIKey    string
 	APIKeyEnv string
@@ -95,6 +107,9 @@ type AnthropicConfig struct {
 
 // XAIConfig controls web-grounded answers through the xAI Responses API.
 type XAIConfig struct {
+	// Enabled explicitly enables or disables the provider. When set to false,
+	// env var fallback is skipped. nil means default (enabled if key resolves).
+	Enabled *bool
 	// APIKey overrides APIKeyEnv (default XAI_API_KEY).
 	APIKey    string
 	APIKeyEnv string
@@ -205,6 +220,9 @@ func (b BraveConfig) resolved() braveSettings {
 }
 
 func (c OpenRouterConfig) resolved() llmAnswerSettings {
+	if c.Enabled != nil && !*c.Enabled {
+		return llmAnswerSettings{}
+	}
 	return resolveLLMAnswerSettings(
 		c.APIKey, c.APIKeyEnv, "OPENROUTER_API_KEY",
 		c.Model, c.ModelEnv, "OPENROUTER_MODEL", "openrouter/auto",
@@ -212,6 +230,9 @@ func (c OpenRouterConfig) resolved() llmAnswerSettings {
 }
 
 func (c OpenAIConfig) resolved() llmAnswerSettings {
+	if c.Enabled != nil && !*c.Enabled {
+		return llmAnswerSettings{}
+	}
 	return resolveLLMAnswerSettings(
 		c.APIKey, c.APIKeyEnv, "OPENAI_API_KEY",
 		c.Model, c.ModelEnv, "OPENAI_MODEL", "gpt-5.6-luna",
@@ -219,6 +240,9 @@ func (c OpenAIConfig) resolved() llmAnswerSettings {
 }
 
 func (c PerplexityConfig) resolved() perplexitySettings {
+	if c.Enabled != nil && !*c.Enabled {
+		return perplexitySettings{}
+	}
 	settings := resolveLLMAnswerSettings(
 		c.APIKey, c.APIKeyEnv, "PERPLEXITY_API_KEY",
 		c.Preset, c.PresetEnv, "PERPLEXITY_PRESET", "low",
@@ -227,6 +251,9 @@ func (c PerplexityConfig) resolved() perplexitySettings {
 }
 
 func (c AnthropicConfig) resolved() llmAnswerSettings {
+	if c.Enabled != nil && !*c.Enabled {
+		return llmAnswerSettings{}
+	}
 	return resolveLLMAnswerSettings(
 		c.APIKey, c.APIKeyEnv, "ANTHROPIC_API_KEY",
 		c.Model, c.ModelEnv, "ANTHROPIC_MODEL", "claude-haiku-4-5",
@@ -234,6 +261,9 @@ func (c AnthropicConfig) resolved() llmAnswerSettings {
 }
 
 func (c XAIConfig) resolved() llmAnswerSettings {
+	if c.Enabled != nil && !*c.Enabled {
+		return llmAnswerSettings{}
+	}
 	return resolveLLMAnswerSettings(
 		c.APIKey, c.APIKeyEnv, "XAI_API_KEY",
 		c.Model, c.ModelEnv, "XAI_MODEL", "grok-4.5",
