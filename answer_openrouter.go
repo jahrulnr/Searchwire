@@ -22,6 +22,7 @@ type openRouterAnswerRequest struct {
 	Messages     []openRouterAnswerMessage `json:"messages"`
 	Tools        []openRouterAnswerTool    `json:"tools"`
 	MaxToolCalls int                       `json:"max_tool_calls"`
+	MaxTokens    int                       `json:"max_tokens,omitempty"`
 }
 
 type openRouterAnswerMessage struct {
@@ -48,6 +49,7 @@ func (p openRouterAnswerProvider) answer(ctx context.Context, f *fetcher, questi
 		}},
 		Tools:        []openRouterAnswerTool{{Type: "openrouter:web_search"}},
 		MaxToolCalls: 1,
+		MaxTokens:    2048,
 	})
 	if err != nil {
 		return "", fmt.Errorf("encode openrouter answer request: %w", err)
