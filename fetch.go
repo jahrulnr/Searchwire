@@ -20,8 +20,23 @@ type FetchResult struct {
 	ContentType string
 	Title       string
 	Text        string
-	Truncated   bool
-	Bytes       int
+	Links       []Link
+	// Headers carries selected response headers useful to agents:
+	// ETag, Last-Modified, X-RateLimit-Remaining, X-RateLimit-Reset,
+	// Retry-After (on 429/503). Empty when absent.
+	Headers map[string]string
+	// Redirects is the number of redirects followed (0 = direct hit).
+	Redirects int
+	Truncated bool
+	Bytes     int
+}
+
+// Link is one anchor collected from an HTML page (text + href). Only safe
+// http/https hrefs are collected; javascript:, data:, and protocol-relative
+// URLs are skipped.
+type Link struct {
+	Text string
+	Href string
 }
 
 // Fetch retrieves one http(s) URL and returns readable text.
@@ -29,12 +44,35 @@ type FetchResult struct {
 // as-is. Bodies larger than maxBytes (or Config.MaxResponseBytes) are truncated
 // with Truncated set. This is a local agent helper, not a hardened proxy.
 func (s *Searcher) Fetch(ctx context.Context, rawURL string) (*FetchResult, error) {
-	return s.FetchWithLimit(ctx, rawURL, 0)
+	return s.FetchWithOptions(ctx, rawURL, FetchOptions{})
 }
 
 // FetchWithLimit is Fetch with an optional per-call byte budget.
 // When maxBytes <= 0, Config.MaxResponseBytes is used.
 func (s *Searcher) FetchWithLimit(ctx context.Context, rawURL string, maxBytes int64) (*FetchResult, error) {
+	return s.FetchWithOptions(ctx, rawURL, FetchOptions{MaxBytes: maxBytes})
+}
+
+// FetchOptions controls one fetch call: byte budget, conditional GET headers,
+// and a Range request. Zero values mean "do not send".
+type FetchOptions struct {
+	// MaxBytes caps the response body. When <= 0, Config.MaxResponseBytes is
+	// used (or the library default).
+	MaxBytes int64
+	// IfNoneMatch is sent as If-None-Match for conditional GET. A 304
+	// response is returned as a FetchResult with StatusCode 304 (not an
+	// error).
+	IfNoneMatch string
+	// IfModifiedSince is sent as If-Modified-Since for conditional GET.
+	IfModifiedSince string
+	// Range is sent as the Range header (e.g. "bytes=10-20"). A 206 response
+	// is returned as a normal FetchResult with StatusCode 206.
+	Range string
+}
+
+// FetchWithOptions is Fetch with conditional-GET / Range / byte-budget
+// controls.
+func (s *Searcher) FetchWithOptions(ctx context.Context, rawURL string, opts FetchOptions) (*FetchResult, error) {
 	if s == nil {
 		return nil, ErrNilSearcher
 	}
@@ -48,8 +86,8 @@ func (s *Searcher) FetchWithLimit(ctx context.Context, rawURL string, maxBytes i
 	}
 
 	limit := s.maxResponseSize
-	if maxBytes > 0 && (limit <= 0 || maxBytes < limit) {
-		limit = maxBytes
+	if opts.MaxBytes > 0 && (limit <= 0 || opts.MaxBytes < limit) {
+		limit = opts.MaxBytes
 	}
 	if limit <= 0 {
 		limit = defaultMaxResponseBytes
@@ -59,8 +97,17 @@ func (s *Searcher) FetchWithLimit(ctx context.Context, rawURL string, maxBytes i
 	if err != nil {
 		return nil, fmt.Errorf("searchwire: create request: %w", err)
 	}
-	req.Header.Set("Accept", "text/html, application/xhtml+xml, text/plain, text/*;q=0.8, */*;q=0.1")
+	req.Header.Set("Accept", "text/html, application/xhtml+xml, text/plain, text/markdown, text/csv, application/json, application/xml, text/xml, application/rss+xml, application/atom+xml, text/*;q=0.8, */*;q=0.1")
 	req.Header.Set("User-Agent", s.userAgent)
+	if opts.IfNoneMatch != "" {
+		req.Header.Set("If-None-Match", opts.IfNoneMatch)
+	}
+	if opts.IfModifiedSince != "" {
+		req.Header.Set("If-Modified-Since", opts.IfModifiedSince)
+	}
+	if opts.Range != "" {
+		req.Header.Set("Range", opts.Range)
+	}
 
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
@@ -79,17 +126,16 @@ func (s *Searcher) FetchWithLimit(ctx context.Context, rawURL string, maxBytes i
 	}
 
 	contentType := resp.Header.Get("Content-Type")
-	mediaType := parseMediaType(contentType)
+	mediaType, charset := parseMediaType(contentType)
 	if err := validateFetchContentType(mediaType); err != nil {
 		return nil, err
 	}
 
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return nil, &HTTPError{
-			StatusCode: resp.StatusCode,
-			Status:     resp.Status,
-			Body:       strings.TrimSpace(string(body)),
-		}
+	// 304 Not Modified and 206 Partial Content are success-family for
+	// conditional GET / Range; treat them as 2xx for the body path.
+	isConditionalOK := resp.StatusCode == http.StatusNotModified || resp.StatusCode == http.StatusPartialContent
+	if (!isConditionalOK) && (resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices) {
+		return nil, newHTTPError(resp, body)
 	}
 
 	finalURL := canonical
@@ -97,7 +143,18 @@ func (s *Searcher) FetchWithLimit(ctx context.Context, rawURL string, maxBytes i
 		finalURL = resp.Request.URL.String()
 	}
 
-	title, text := extractFetchText(mediaType, body)
+	// Decode non-UTF-8 bodies. For HTML without a header charset, sniff a
+	// <meta charset> declaration before decoding so the parser sees UTF-8.
+	if charset == "" && (isHTMLMediaType(mediaType) || (mediaType == "" && looksLikeHTML(body))) {
+		charset = sniffHTMLCharset(body)
+	}
+	rawBytes := len(body)
+	body = decodeBody(body, charset)
+
+	title, text, links := extractFetchText(mediaType, body)
+	if truncated {
+		text = strings.TrimRight(text, "\n") + "\n[truncated]"
+	}
 	return &FetchResult{
 		URL:         canonical,
 		FinalURL:    finalURL,
@@ -105,9 +162,83 @@ func (s *Searcher) FetchWithLimit(ctx context.Context, rawURL string, maxBytes i
 		ContentType: contentType,
 		Title:       title,
 		Text:        text,
+		Links:       links,
+		Headers:     selectedHeaders(resp),
+		Redirects:   redirectCount(resp),
 		Truncated:   truncated,
-		Bytes:       len(body),
+		Bytes:       rawBytes,
 	}, nil
+}
+
+// newHTTPError builds an HTTPError from a non-2xx response, parsing
+// Retry-After (seconds) and a JSON error envelope when present.
+func newHTTPError(resp *http.Response, body []byte) *HTTPError {
+	e := &HTTPError{
+		StatusCode: resp.StatusCode,
+		Status:     resp.Status,
+		Body:       strings.TrimSpace(string(body)),
+	}
+	if ra := resp.Header.Get("Retry-After"); ra != "" {
+		if n, err := parseRetryAfter(ra); err == nil {
+			e.RetryAfter = n
+		}
+	}
+	if mt, _ := parseMediaType(resp.Header.Get("Content-Type")); isJSONMediaType(mt) {
+		e.ErrorBody = parseJSONErrorEnvelope(body)
+	}
+	return e
+}
+
+// selectedHeaders copies a small set of agent-useful headers into a map.
+// Lookup is case-insensitive against the canonical header names so it works
+// whether the server (or test transport) used canonical or literal casing.
+func selectedHeaders(resp *http.Response) map[string]string {
+	wanted := []string{"ETag", "Last-Modified", "X-RateLimit-Remaining", "X-RateLimit-Reset", "Retry-After", "Content-Range"}
+	out := make(map[string]string, len(wanted))
+	for _, h := range wanted {
+		if v := headerGetCI(resp.Header, h); v != "" {
+			out[h] = v
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// headerGetCI is a case-insensitive Header.Get. http.Header.Get already
+// canonicalizes the lookup key, but a transport that populates the map with
+// literal (non-canonical) keys defeats that. This iterates so both forms hit.
+func headerGetCI(h http.Header, name string) string {
+	for k, vs := range h {
+		if strings.EqualFold(k, name) && len(vs) > 0 {
+			return vs[0]
+		}
+	}
+	return ""
+}
+
+// redirectCount returns the number of redirects followed to reach resp by
+// walking resp.Request.Response chain (set by net/http when CheckRedirect
+// follows). Returns 0 when there was no redirect.
+func redirectCount(resp *http.Response) int {
+	if resp == nil || resp.Request == nil {
+		return 0
+	}
+	count := 0
+	prev := resp.Request.Response
+	for prev != nil && prev.StatusCode >= 300 && prev.StatusCode < 400 {
+		count++
+		if prev.Request == nil {
+			break
+		}
+		next := prev.Request.Response
+		if next == prev {
+			break
+		}
+		prev = next
+	}
+	return count
 }
 
 func validateFetchURL(raw string) (string, error) {
@@ -129,37 +260,41 @@ func validateFetchURL(raw string) (string, error) {
 	return u.String(), nil
 }
 
-func parseMediaType(header string) string {
+func parseMediaType(header string) (mediaType, charset string) {
 	if strings.TrimSpace(header) == "" {
-		return ""
+		return "", ""
 	}
-	mediaType, _, err := mime.ParseMediaType(header)
+	mediaType, params, err := mime.ParseMediaType(header)
 	if err != nil {
-		return strings.ToLower(strings.TrimSpace(strings.Split(header, ";")[0]))
+		return strings.ToLower(strings.TrimSpace(strings.Split(header, ";")[0])), ""
 	}
-	return strings.ToLower(mediaType)
+	return strings.ToLower(mediaType), strings.ToLower(strings.TrimSpace(params["charset"]))
 }
 
 func validateFetchContentType(mediaType string) error {
 	if mediaType == "" {
 		return nil
 	}
-	switch {
-	case mediaType == "text/html",
-		mediaType == "application/xhtml+xml",
-		mediaType == "text/plain",
-		strings.HasPrefix(mediaType, "text/"):
+	if isFetchAllowedMediaType(mediaType) {
 		return nil
-	default:
-		return fmt.Errorf("%w: %q", ErrUnexpectedContentType, mediaType)
 	}
+	return fmt.Errorf("%w: %q", ErrUnexpectedContentType, mediaType)
 }
 
-func extractFetchText(mediaType string, body []byte) (title, text string) {
+func extractFetchText(mediaType string, body []byte) (title, text string, links []Link) {
 	if isHTMLMediaType(mediaType) || (mediaType == "" && looksLikeHTML(body)) {
 		return extractHTMLPage(body)
 	}
-	return "", collapseWhitespace(string(body))
+	switch {
+	case isJSONMediaType(mediaType):
+		return "", prettyJSON(body), nil
+	case isXMLMediaType(mediaType):
+		return "", stripXMLTags(body), nil
+	default:
+		// text/plain, text/markdown, text/csv, and other text/* keep
+		// newlines; only inline whitespace runs are collapsed.
+		return "", collapseInlineWhitespace(string(body)), nil
+	}
 }
 
 func isHTMLMediaType(mediaType string) bool {
@@ -167,40 +302,113 @@ func isHTMLMediaType(mediaType string) bool {
 }
 
 func looksLikeHTML(body []byte) bool {
-	sample := strings.ToLower(strings.TrimSpace(string(body)))
-	if len(sample) > 256 {
-		sample = sample[:256]
+	// Strip a leading UTF-8 BOM and whitespace so a fragment starting with
+	// <head> is still detected.
+	s := strings.TrimLeft(string(body), "\xef\xbb\xbf \t\r\n")
+	// A body that begins with { or [ is JSON (or JSON-ish), not HTML, even if
+	// a string value inside it contains "<head>". This prevents
+	// misclassification of JSON payloads describing HTML.
+	if len(s) > 0 && (s[0] == '{' || s[0] == '[') {
+		return false
 	}
-	return strings.Contains(sample, "<html") || strings.Contains(sample, "<!doctype html") || strings.Contains(sample, "<head")
+	lower := strings.ToLower(s)
+	if len(lower) > 512 {
+		lower = lower[:512]
+	}
+	if strings.HasPrefix(lower, "<!doctype html") || strings.HasPrefix(lower, "<html") {
+		return true
+	}
+	return strings.Contains(lower, "<html") || strings.Contains(lower, "<!doctype") || strings.Contains(lower, "<head")
 }
 
-func extractHTMLPage(body []byte) (title, text string) {
+func extractHTMLPage(body []byte) (title, text string, links []Link) {
 	doc, err := html.Parse(strings.NewReader(string(body)))
 	if err != nil {
-		return "", collapseWhitespace(stripTagsFallback(string(body)))
+		return "", collapseInlineWhitespace(stripTagsFallback(string(body))), nil
 	}
-	titleNode := findDescendant(doc, "title", "")
-	title = textContent(titleNode)
+	title = htmlTitle(doc)
 
 	var b strings.Builder
-	var walk func(*html.Node)
-	walk = func(n *html.Node) {
+	var collected []Link
+	var walk func(*html.Node, bool)
+	walk = func(n *html.Node, inPre bool) {
 		if n.Type == html.ElementNode {
 			switch n.Data {
-			case "script", "style", "noscript", "template", "svg", "iframe":
+			case "script", "style", "noscript", "template", "svg", "iframe",
+				"nav", "footer", "aside", "form", "dialog":
 				return
+			case "pre", "code":
+				if !inPre {
+					if b.Len() > 0 {
+						b.WriteByte('\n')
+					}
+					for child := n.FirstChild; child != nil; child = child.NextSibling {
+						walk(child, true)
+					}
+					b.WriteByte('\n')
+					return
+				}
+			case "a":
+				if href := attrValue(n, "href"); isSafeResultURL(href) {
+					collected = append(collected, Link{Text: textContent(n), Href: href})
+				}
 			}
 		}
 		if n.Type == html.TextNode {
 			b.WriteString(n.Data)
-			b.WriteByte(' ')
+			if !inPre {
+				b.WriteByte(' ')
+			}
 		}
 		for child := n.FirstChild; child != nil; child = child.NextSibling {
-			walk(child)
+			walk(child, inPre)
+		}
+	}
+	walk(doc, false)
+	return title, collapseInlineWhitespace(b.String()), collected
+}
+
+// htmlTitle resolves the page title with fallbacks: <title> first, then
+// og:title / twitter:title meta, then the first <h1>.
+func htmlTitle(doc *html.Node) string {
+	if t := findDescendant(doc, "title", ""); t != nil {
+		if s := strings.TrimSpace(textContent(t)); s != "" {
+			return s
+		}
+	}
+	if m := findMetaContent(doc, "property", "og:title"); m != "" {
+		return m
+	}
+	if m := findMetaContent(doc, "name", "twitter:title"); m != "" {
+		return m
+	}
+	if h := findDescendant(doc, "h1", ""); h != nil {
+		if s := strings.TrimSpace(textContent(h)); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+// findMetaContent searches for <meta key="val" content="..."> and returns the
+// trimmed content. Returns "" if not found.
+func findMetaContent(doc *html.Node, key, val string) string {
+	var found string
+	var walk func(*html.Node)
+	walk = func(n *html.Node) {
+		if found != "" {
+			return
+		}
+		if n.Type == html.ElementNode && n.Data == "meta" && attrValue(n, key) == val {
+			found = strings.TrimSpace(attrValue(n, "content"))
+			return
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
 		}
 	}
 	walk(doc)
-	return title, collapseWhitespace(b.String())
+	return found
 }
 
 func stripTagsFallback(raw string) string {

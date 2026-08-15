@@ -63,14 +63,17 @@ type fetchInput struct {
 }
 
 type fetchOutput struct {
-	URL         string `json:"url"`
-	FinalURL    string `json:"finalUrl,omitempty"`
-	StatusCode  int    `json:"statusCode"`
-	ContentType string `json:"contentType,omitempty"`
-	Title       string `json:"title,omitempty"`
-	Text        string `json:"text"`
-	Truncated   bool   `json:"truncated"`
-	Bytes       int    `json:"bytes"`
+	URL         string            `json:"url"`
+	FinalURL    string            `json:"finalUrl,omitempty"`
+	StatusCode  int               `json:"statusCode"`
+	ContentType string            `json:"contentType,omitempty"`
+	Title       string            `json:"title,omitempty"`
+	Text        string            `json:"text"`
+	Links       []searchwire.Link `json:"links,omitempty"`
+	Headers     map[string]string `json:"headers,omitempty"`
+	Redirects   int               `json:"redirects,omitempty"`
+	Truncated   bool              `json:"truncated"`
+	Bytes       int               `json:"bytes"`
 }
 
 type answerInput struct {
@@ -215,6 +218,9 @@ func runFetch(ctx context.Context, base searchwire.Config, defaultMaxBytes int64
 		ContentType: result.ContentType,
 		Title:       result.Title,
 		Text:        result.Text,
+		Links:       result.Links,
+		Headers:     result.Headers,
+		Redirects:   result.Redirects,
 		Truncated:   result.Truncated,
 		Bytes:       result.Bytes,
 	}, nil

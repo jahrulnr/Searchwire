@@ -47,6 +47,14 @@ type HTTPError struct {
 	StatusCode int
 	Status     string
 	Body       string
+	// RetryAfter is the parsed Retry-After header value in seconds when the
+	// server provided one (e.g. on 429/503). Zero when absent or unparseable.
+	RetryAfter int
+	// ErrorBody is the structured error envelope parsed from Body when it is
+	// valid JSON of the form {"error":...} or {"errors":[...]} or
+	// {"message":"..."} or {"detail":"..."}. Nil when Body is not JSON or
+	// does not match a known shape.
+	ErrorBody map[string]any
 }
 
 func (e *HTTPError) Error() string {
@@ -66,6 +74,8 @@ func redactErrorSecret(err error, secret string) error {
 			StatusCode: httpErr.StatusCode,
 			Status:     strings.ReplaceAll(httpErr.Status, secret, "[redacted]"),
 			Body:       strings.ReplaceAll(httpErr.Body, secret, "[redacted]"),
+			RetryAfter: httpErr.RetryAfter,
+			ErrorBody:  httpErr.ErrorBody,
 		}
 	}
 	return errors.New(strings.ReplaceAll(err.Error(), secret, "[redacted]"))

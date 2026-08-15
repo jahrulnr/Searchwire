@@ -56,18 +56,44 @@ func main() {
 
 ### Fetch
 
-`Searcher.Fetch(ctx, url)` / `FetchWithLimit(ctx, url, maxBytes)` perform a single HTTP GET:
+`Searcher.Fetch(ctx, url)` / `FetchWithLimit(ctx, url, maxBytes)` /
+`FetchWithOptions(ctx, url, opts)` perform a single HTTP GET:
 
 | Field | Meaning |
 |-------|---------|
 | `URL` / `FinalURL` | Requested URL and post-redirect URL |
 | `StatusCode` / `ContentType` | Response metadata |
 | `Title` / `Text` | Page title (HTML) and readable text |
+| `Links` | Safe http/https anchors collected from HTML (text + href) |
+| `Headers` | Selected response headers: `ETag`, `Last-Modified`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`, `Retry-After`, `Content-Range` |
+| `Redirects` | Number of redirects followed to reach the final response |
 | `Truncated` / `Bytes` | Whether the body was capped; bytes read |
 
+`FetchOptions` enables conditional GET and Range requests:
+
+| Field | Header sent | Notes |
+|-------|-------------|-------|
+| `MaxBytes` | — | Per-call byte budget (overrides `Config.MaxResponseBytes` when smaller) |
+| `IfNoneMatch` | `If-None-Match` | A `304 Not Modified` is returned as a `FetchResult` (not an error) |
+| `IfModifiedSince` | `If-Modified-Since` | Same 304 handling |
+| `Range` | `Range` | A `206 Partial Content` is returned as a normal `FetchResult` |
+
 - Schemes: `http` / `https` only.
-- Accepts `text/html`, `application/xhtml+xml`, `text/plain`, and other `text/*`.
-- HTML → title + visible text (scripts/styles stripped). Oversized bodies truncate with `Truncated: true` instead of hard-failing.
+- Accepts `text/html`, `application/xhtml+xml`, `text/plain`, `text/markdown`,
+  `text/csv`, `application/json` (and `+json` vendor types), `application/xml`,
+  `text/xml`, `application/rss+xml`, `application/atom+xml` (and `+xml` vendor
+  types), and other `text/*`.
+- HTML → title + visible text (scripts/styles/nav/footer/aside/form stripped,
+  `<pre>`/`<code>` whitespace preserved, links collected, `og:title`/`<h1>`
+  title fallbacks). JSON → pretty-printed (invalid JSON returned raw).
+  XML/RSS/Atom → tag-stripped text with newlines preserved. Markdown/CSV/plain
+  text → newlines preserved, inline whitespace collapsed. Non-UTF-8 charsets
+  (declared in `Content-Type` or `<meta charset>`) are decoded to UTF-8.
+  Oversized bodies truncate with `Truncated: true` and a trailing
+  `[truncated]` marker instead of hard-failing.
+- Non-2xx responses return `*HTTPError` with `RetryAfter` (parsed
+  `Retry-After` seconds, supports integer and HTTP-date forms) and `ErrorBody`
+  (parsed JSON error envelope when the error body is JSON).
 - Local agent helper only: no JS rendering, no cookie jar, no multi-tenant SSRF suite. Loopback/private hosts are allowed for local-dev agent use.
 
 ## MCP Server
@@ -89,7 +115,7 @@ searchwire-mcp
 | Name | Input | Output |
 |------|-------|--------|
 | `searchwire_search` | `{ "query": string, "limit"?: number }` | Searchwire response JSON (`query`, `results`, `errors`) |
-| `searchwire_fetch` | `{ "url": string, "max_bytes"?: number }` | Page JSON (`url`, `finalUrl`, `statusCode`, `contentType`, `title`, `text`, `truncated`, `bytes`) |
+| `searchwire_fetch` | `{ "url": string, "max_bytes"?: number }` | Page JSON (`url`, `finalUrl`, `statusCode`, `contentType`, `title`, `text`, `links`, `headers`, `redirects`, `truncated`, `bytes`) |
 | `searchwire_answer` | `{ "question": string, "provider"?: string }` | Web-grounded answer JSON (`question`, `answer`, `provider`); registered only when an answer-provider key is available |
 
 Recommended agent workflow: **`searchwire_search` → pick URLs → `searchwire_fetch`**. Snippets alone are incomplete; fetch promising hits for full content.
