@@ -61,7 +61,7 @@ func (e *HTTPError) Error() string {
 	if e.Body == "" {
 		return fmt.Sprintf("searchwire: source returned %s", e.Status)
 	}
-	return fmt.Sprintf("searchwire: source returned %s: %s", e.Status, e.Body)
+	return fmt.Sprintf("searchwire: source returned %s: %s", e.Status, cleanErrorBody(e.Body))
 }
 
 func redactErrorSecret(err error, secret string) error {
