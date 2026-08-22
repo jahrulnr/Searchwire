@@ -11,16 +11,35 @@ import (
 // not waste agent tokens with raw HTML tags. Non-HTML bodies are returned
 // unchanged. After conversion, runs of 3+ consecutive newlines are collapsed
 // to 2 (a common artifact of HTML-to-text conversion) and the result is
-// trimmed. If conversion fails, the original body is returned as a fallback.
+// trimmed.
+//
+// The html-to-markdown converter can return an empty string for pages that
+// are almost entirely <script>/<style> with minimal visible content (e.g.
+// SvelteKit error pages). In that case we fall back to extractHTMLPage
+// (golang.org/x/net/html text extraction) which always produces some text.
+// If both produce nothing useful, the original body is returned as-is.
 func cleanErrorBody(body string) string {
 	if body == "" || !looksLikeHTML([]byte(body)) {
 		return body
 	}
 	md, err := htmltomarkdown.ConvertString(body)
-	if err != nil || md == "" {
+	if err == nil && strings.TrimSpace(md) != "" {
+		return collapseNewlines(strings.TrimSpace(md))
+	}
+	// Fallback: extract visible text via x/net/html. This handles pages
+	// where the markdown converter silently produces empty output.
+	title, text, _ := extractHTMLPage([]byte(body))
+	var parts []string
+	if title != "" {
+		parts = append(parts, title)
+	}
+	if text != "" {
+		parts = append(parts, text)
+	}
+	if len(parts) == 0 {
 		return body
 	}
-	return collapseNewlines(strings.TrimSpace(md))
+	return collapseNewlines(strings.TrimSpace(strings.Join(parts, "\n\n")))
 }
 
 // collapseNewlines replaces runs of 3+ consecutive newlines with exactly 2
