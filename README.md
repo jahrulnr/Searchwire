@@ -96,6 +96,61 @@ func main() {
   (parsed JSON error envelope when the error body is JSON).
 - Local agent helper only: no JS rendering, no cookie jar, no multi-tenant SSRF suite. Loopback/private hosts are allowed for local-dev agent use.
 
+### Search
+
+`Searcher.Search(ctx, query)` fans the query out to all enabled sources concurrently, deduplicates results by canonical URL (lowercased host, default ports dropped, fragments and `utm_*` / `fbclid` / `gclid` tracking parameters stripped), then ranks the survivors with Reciprocal Rank Fusion (k=60).
+
+```go
+type Result struct {
+	Title   string
+	URL     string // canonical form used for deduplication
+	Snippet string // source-provided snippet; GitHub snippets are HTML-stripped and capped at 320 chars
+	Sources []string
+	Score   float64 // RRF score: higher = more sources agreed on this URL
+}
+```
+
+When two results tie on score, earlier-configured sources win (see [Built-in sources](#built-in-sources)). Source failures never abort a search while at least one source succeeds — they are reported per-source in `Response.Errors`.
+
+**Per-call limit.** By default each search returns `Config.Limit` results (default **10**) and asks each source for that many candidates. To override it without rebuilding the searcher:
+
+```go
+resp, err := searcher.SearchWithOptions(ctx, "query", searchwire.SearchOptions{Limit: 25})
+// Limit <= 0 falls back to Config.Limit, then to the built-in default of 10.
+```
+
+The same `Limit` value bounds both what each source is asked for and how many fused results come back.
+
+### Defaults
+
+| Setting | Default | Override |
+|---------|---------|----------|
+| Result limit | 10 | `Config.Limit`, `SearchOptions{Limit}` (per call), `SEARCHWIRE_LIMIT` (adapter) |
+| HTTP timeout | 10s | `Config.Timeout`, `SEARCHWIRE_TIMEOUT` (adapter) |
+| Extracted-text budget per fetch | 2 MiB | `Config.MaxResponseBytes`, `FetchOptions.MaxBytes` / `FetchWithLimit` (per call), `SEARCHWIRE_MAX_BYTES` (adapter) |
+| Raw download ceiling | 10 MiB | `Config.MaxRawResponseBytes` (safety ceiling, independent of the text budget) |
+
+Note: `Config.HTTPClient`, when provided, replaces the internally constructed client entirely — `Config.Timeout` applies only to the internal client.
+
+### Errors
+
+All sentinel errors are package-level values suitable for `errors.Is`:
+
+| Error | Returned by | Meaning |
+|-------|-------------|---------|
+| `ErrEmptyQuery` | Search | Empty or whitespace-only query |
+| `ErrEmptyQuestion` | Answer | Empty question |
+| `ErrEmptyURL` / `ErrInvalidURL` | Fetch | Missing or unparseable URL |
+| `ErrUnsupportedScheme` | Fetch | Scheme other than http/https |
+| `ErrNilSearcher` | all methods | Method called on a nil `*Searcher` |
+| `ErrResponseTooLarge` | Fetch | Body exceeded the raw download ceiling |
+| `ErrUnexpectedContentType` | Fetch | Content type outside the accepted allowlist |
+| `ErrAnswerUnavailable` | Answer | No answer provider configured |
+| `ErrAnswerProviderUnavailable` | Answer | Requested provider not configured |
+| `ErrInvalidProviderResponse` | Answer | Provider returned an unusable response |
+
+Additionally: every-source failure returns `*SearchError` (inspect `.Failures`), and non-2xx responses return `*HTTPError` (inspect with `errors.As`; see Fetch above). Error strings from configured providers have their API keys redacted before returning.
+
 ## MCP Server
 
 Install the stdio adapter:
