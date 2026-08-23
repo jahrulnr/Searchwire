@@ -345,3 +345,45 @@ func TestFuseLimitBoundaries(t *testing.T) {
 		t.Fatalf("default limit = %d", got)
 	}
 }
+
+func TestSearchWithOptionsLimitReachesSourcesAndFusion(t *testing.T) {
+	s := newSearcherWithSources([]source{fakeSource{
+		nameValue: "one",
+		searchFn: func(_ context.Context, _ *fetcher, _ string, limit int) ([]sourceResult, error) {
+			if limit != 25 {
+				t.Fatalf("source received limit %d, want 25", limit)
+			}
+			results := make([]sourceResult, 0, 30)
+			for i := 0; i < 30; i++ {
+				results = append(results, sourceResult{
+					title: fmt.Sprintf("result-%02d", i),
+					url:   fmt.Sprintf("https://example.com/%d", i),
+					rank:  i + 1,
+				})
+			}
+			return results, nil
+		},
+	}}, Config{})
+	resp, err := s.SearchWithOptions(context.Background(), "anything", SearchOptions{Limit: 25})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Results) != 25 {
+		t.Fatalf("got %d results, want 25", len(resp.Results))
+	}
+}
+
+func TestSearchWithoutOptionsUsesConfiguredLimit(t *testing.T) {
+	s := newSearcherWithSources([]source{fakeSource{
+		nameValue: "one",
+		searchFn: func(_ context.Context, _ *fetcher, _ string, limit int) ([]sourceResult, error) {
+			if limit != defaultLimit {
+				t.Fatalf("source received limit %d, want default %d", limit, defaultLimit)
+			}
+			return []sourceResult{{title: "OK", url: "https://example.com", rank: 1}}, nil
+		},
+	}}, Config{})
+	if _, err := s.Search(context.Background(), "anything"); err != nil {
+		t.Fatal(err)
+	}
+}

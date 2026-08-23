@@ -68,9 +68,24 @@ type Result struct {
 	Score   float64
 }
 
+// SearchOptions controls one search call. Zero values keep the configured
+// defaults.
+type SearchOptions struct {
+	// Limit overrides the configured result limit for this call: it caps the
+	// fused results returned and bounds each source's requested count.
+	// When <= 0, Config.Limit applies.
+	Limit int
+}
+
 // Search runs the query across all built-in sources concurrently.
 // When at least one source succeeds, partial failures are returned in Response.Errors.
 func (s *Searcher) Search(ctx context.Context, query string) (*Response, error) {
+	return s.SearchWithOptions(ctx, query, SearchOptions{})
+}
+
+// SearchWithOptions is Search with per-call options such as a different
+// result limit than the configured default.
+func (s *Searcher) SearchWithOptions(ctx context.Context, query string, opts SearchOptions) (*Response, error) {
 	if s == nil {
 		return nil, ErrNilSearcher
 	}
@@ -82,11 +97,19 @@ func (s *Searcher) Search(ctx context.Context, query string) (*Response, error) 
 		return nil, err
 	}
 
+	limit := opts.Limit
+	if limit <= 0 {
+		limit = s.limit
+	}
+	if limit <= 0 {
+		limit = defaultLimit
+	}
+
 	ch := make(chan sourceOutcome, len(s.sources))
 	for i, src := range s.sources {
 		go func(index int, src source) {
 			fetcher := newFetcher(s.httpClient, s.userAgent, s.maxRawResponseSize)
-			results, err := src.search(ctx, fetcher, query, s.limit)
+			results, err := src.search(ctx, fetcher, query, limit)
 			ch <- sourceOutcome{index: index, name: src.name(), results: results, err: err}
 		}(i, src)
 	}
@@ -110,6 +133,6 @@ func (s *Searcher) Search(ctx context.Context, query string) (*Response, error) 
 		return nil, &SearchError{Failures: orderSourceErrors(failures, s.sources)}
 	}
 
-	results := fuseResults(successes, s.sources, s.limit)
+	results := fuseResults(successes, s.sources, limit)
 	return &Response{Query: query, Results: results, Errors: orderSourceErrors(failures, s.sources)}, nil
 }
