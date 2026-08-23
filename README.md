@@ -68,6 +68,8 @@ func main() {
 | `Headers` | Selected response headers: `ETag`, `Last-Modified`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`, `Retry-After`, `Content-Range` |
 | `Redirects` | Number of redirects followed to reach the final response |
 | `Truncated` / `Bytes` | Whether the body was capped; bytes read |
+| `DescribedBy` | Absolute URL of the covering `llms.txt` (`rel="describedby"` via HTML `<link>` or HTTP `Link:` header); empty when absent |
+| `MarkdownAlt` | Absolute URL of a markdown alternate version of this page (`rel="alternate"` `type="text/markdown"`); empty when absent |
 
 `FetchOptions` enables conditional GET and Range requests:
 
@@ -95,6 +97,26 @@ func main() {
   `Retry-After` seconds, supports integer and HTTP-date forms) and `ErrorBody`
   (parsed JSON error envelope when the error body is JSON).
 - Local agent helper only: no JS rendering, no cookie jar, no multi-tenant SSRF suite. Loopback/private hosts are allowed for local-dev agent use.
+
+### llms.txt
+
+Searchwire implements the client side of the [llmstxt.org](https://llmstxt.org/) v2 proposal — the convention Chrome Lighthouse audits under its Agentic Browsing category:
+
+- **Discovery on every fetch.** When a page advertises its LLM-friendly entry points, `Fetch` reports them resolved to absolute URLs: `DescribedBy` (the covering `llms.txt`, from `<link rel="describedby">` or the RFC 8288 `Link:` header) and `MarkdownAlt` (a markdown version of the fetched page, from `<link rel="alternate" type="text/markdown">`).
+- **Retrieval.** `Searcher.FetchLLMsTxt(ctx, url)` probes `<dir>/llms.txt` first and `/llms.txt` second (the most specific file covers the URL per spec), follows redirects, parses the file, and returns an `*LLMsTxtResult`. 404/410 probes fall through to the next candidate; when every candidate is missing the returned error wraps `ErrLLMsTxtNotFound`.
+- **Parsing.** `ParseLLMsTxt(content string)` parses llms.txt Markdown leniently into a structured `LLMsTxt`: required `Title` (H1), optional blockquote `Summary`, free-form `Description`, and `Sections` of `[name](url): notes` links. A file without the H1 returns an error wrapping `ErrInvalidLLMsTxt`.
+
+```go
+res, err := searcher.FetchLLMsTxt(ctx, "https://example.com/docs/page.html")
+if errors.Is(err, searchwire.ErrLLMsTxtNotFound) {
+	// site publishes no llms.txt — fall back to ordinary fetching
+}
+for _, section := range res.LLMsTxt.Sections {
+	for _, link := range section.Links {
+		fmt.Println(section.Name, link.Name, link.URL)
+	}
+}
+```
 
 ### Search
 
@@ -145,6 +167,8 @@ All sentinel errors are package-level values suitable for `errors.Is`:
 | `ErrNilSearcher` | all methods | Method called on a nil `*Searcher` |
 | `ErrResponseTooLarge` | Fetch | Body exceeded the raw download ceiling |
 | `ErrUnexpectedContentType` | Fetch | Content type outside the accepted allowlist |
+| `ErrLLMsTxtNotFound` | FetchLLMsTxt | No `llms.txt` at the directory or site root (all probes 404/410) |
+| `ErrInvalidLLMsTxt` | FetchLLMsTxt / ParseLLMsTxt | File exists but violates the required structure (missing H1) |
 | `ErrAnswerUnavailable` | Answer | No answer provider configured |
 | `ErrAnswerProviderUnavailable` | Answer | Requested provider not configured |
 | `ErrInvalidProviderResponse` | Answer | Provider returned an unusable response |
@@ -170,7 +194,8 @@ searchwire-mcp
 | Name | Input | Output |
 |------|-------|--------|
 | `searchwire_search` | `{ "query": string, "limit"?: number }` | Searchwire response JSON (`query`, `results`, `errors`) |
-| `searchwire_fetch` | `{ "url": string, "max_bytes"?: number }` | Page JSON (`url`, `finalUrl`, `statusCode`, `contentType`, `title`, `text`, `links`, `headers`, `redirects`, `truncated`, `bytes`) |
+| `searchwire_fetch` | `{ "url": string, "max_bytes"?: number }` | Page JSON (`url`, `finalUrl`, `statusCode`, `contentType`, `title`, `text`, `links`, `headers`, `redirects`, `truncated`, `bytes`, `describedBy`, `markdownAlt`) |
+| `searchwire_llms_txt` | `{ "url": string }` | Parsed llms.txt JSON (`url`, `finalUrl`, `statusCode`, `title`, `summary`, `description`, `sections[].links[]`, `headers`); errors with a not-found sentinel when the site publishes none |
 | `searchwire_answer` | `{ "question": string, "provider"?: string }` | Web-grounded answer JSON (`question`, `answer`, `provider`); registered only when an answer-provider key is available |
 
 Recommended agent workflow: **`searchwire_search` → pick URLs → `searchwire_fetch`**. Snippets alone are incomplete; fetch promising hits for full content.

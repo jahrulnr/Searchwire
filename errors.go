@@ -7,14 +7,20 @@ import (
 )
 
 var (
-	ErrEmptyQuery                = errors.New("searchwire: query is required")
-	ErrEmptyQuestion             = errors.New("searchwire: question is required")
-	ErrEmptyURL                  = errors.New("searchwire: url is required")
-	ErrInvalidURL                = errors.New("searchwire: invalid url")
-	ErrUnsupportedScheme         = errors.New("searchwire: unsupported url scheme")
-	ErrNilSearcher               = errors.New("searchwire: nil searcher")
-	ErrResponseTooLarge          = errors.New("searchwire: response exceeds configured limit")
-	ErrUnexpectedContentType     = errors.New("searchwire: unexpected content type")
+	ErrEmptyQuery            = errors.New("searchwire: query is required")
+	ErrEmptyQuestion         = errors.New("searchwire: question is required")
+	ErrEmptyURL              = errors.New("searchwire: url is required")
+	ErrInvalidURL            = errors.New("searchwire: invalid url")
+	ErrUnsupportedScheme     = errors.New("searchwire: unsupported url scheme")
+	ErrNilSearcher           = errors.New("searchwire: nil searcher")
+	ErrResponseTooLarge      = errors.New("searchwire: response exceeds configured limit")
+	ErrUnexpectedContentType = errors.New("searchwire: unexpected content type")
+	// ErrLLMsTxtNotFound is returned by FetchLLMsTxt when no llms.txt file
+	// exists at the enclosing directory or the site root (all probes 404/410).
+	ErrLLMsTxtNotFound = errors.New("searchwire: llms.txt not found")
+	// ErrInvalidLLMsTxt is returned when llms.txt content exists but violates
+	// the required structure (missing H1 heading).
+	ErrInvalidLLMsTxt            = errors.New("searchwire: invalid llms.txt")
 	ErrAnswerUnavailable         = errors.New("searchwire: answer provider is unavailable")
 	ErrAnswerProviderUnavailable = errors.New("searchwire: requested answer provider is unavailable")
 	ErrInvalidProviderResponse   = errors.New("searchwire: invalid provider response")

@@ -28,7 +28,7 @@ func cleanErrorBody(body string) string {
 	}
 	// Fallback: extract visible text via x/net/html. This handles pages
 	// where the markdown converter silently produces empty output.
-	title, text, _ := extractHTMLPage([]byte(body))
+	title, text, _, _ := extractHTMLPage([]byte(body))
 	var parts []string
 	if title != "" {
 		parts = append(parts, title)

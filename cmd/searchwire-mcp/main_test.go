@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -584,5 +585,81 @@ func TestFetchTokenNeverInOutput(t *testing.T) {
 		if text, ok := c.(*mcp.TextContent); ok && strings.Contains(text.Text, secret) {
 			t.Fatalf("token leaked: %s", text.Text)
 		}
+	}
+}
+
+func llmsStaticClient(status int, contentType, body string) *http.Client {
+	return &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: status,
+			Status:     fmt.Sprintf("%d %s", status, http.StatusText(status)),
+			Header:     http.Header{"Content-Type": []string{contentType}},
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    r,
+		}, nil
+	})}
+}
+
+func TestLLMsTxtHappyPath(t *testing.T) {
+	cfg := searchwire.Config{HTTPClient: llmsStaticClient(http.StatusOK, "text/markdown",
+		"# Example\n\n> Summary.\n\n## Docs\n\n- [Guide](https://example.com/guide.md): usage\n")}
+	out, err := runLLMsTxt(context.Background(), cfg, llmsTxtInput{URL: "https://example.com/docs/page.html"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Title != "Example" || out.Summary != "Summary." || out.StatusCode != 200 {
+		t.Fatalf("out = %#v", out)
+	}
+	if len(out.Sections) != 1 || out.Sections[0].Name != "Docs" ||
+		len(out.Sections[0].Links) != 1 || out.Sections[0].Links[0].Notes != "usage" {
+		t.Fatalf("sections = %#v", out.Sections)
+	}
+	if out.FinalURL != "https://example.com/docs/llms.txt" {
+		t.Fatalf("final = %q", out.FinalURL)
+	}
+
+	handler := makeLLMsTxtHandler(cfg)
+	result, structured, err := handler(context.Background(), nil, llmsTxtInput{URL: "https://example.com/x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result != nil && result.IsError {
+		t.Fatalf("unexpected tool error: %#v", result)
+	}
+	if structured.Title != out.Title {
+		t.Fatalf("handler title = %q, want %q", structured.Title, out.Title)
+	}
+	if len(result.Content) == 0 {
+		t.Fatal("expected JSON text content")
+	}
+}
+
+func TestLLMsTxtNotFoundSurfacesSentinel(t *testing.T) {
+	cfg := searchwire.Config{HTTPClient: llmsStaticClient(http.StatusNotFound, "text/plain", "nope")}
+	_, err := runLLMsTxt(context.Background(), cfg, llmsTxtInput{URL: "https://example.com/page"})
+	if !errors.Is(err, searchwire.ErrLLMsTxtNotFound) {
+		t.Fatalf("err = %v", err)
+	}
+
+	handler := makeLLMsTxtHandler(cfg)
+	result, _, err := handler(context.Background(), nil, llmsTxtInput{URL: "https://example.com/page"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result == nil || !result.IsError || len(result.Content) == 0 {
+		t.Fatalf("expected error content, got %#v", result)
+	}
+}
+
+func TestNewServerRegistersLLMsTxtTool(t *testing.T) {
+	server := newServer(searchwire.Config{HTTPClient: fixtureClient(t)}, 0)
+	found := false
+	for _, name := range listToolNames(t, server) {
+		if name == llmsToolName {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("%s not registered; tools = %v", llmsToolName, listToolNames(t, server))
 	}
 }

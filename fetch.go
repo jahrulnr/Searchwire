@@ -30,6 +30,15 @@ type FetchResult struct {
 	Redirects int
 	Truncated bool
 	Bytes     int
+	// DescribedBy is the absolute URL of the llms.txt file covering this
+	// page, discovered via <link rel="describedby"> or an equivalent HTTP
+	// Link header (llmstxt.org v2). Empty when the site does not advertise
+	// one.
+	DescribedBy string
+	// MarkdownAlt is the absolute URL of a markdown alternate version of
+	// this page (<link rel="alternate" type="text/markdown"> or the HTTP
+	// Link header equivalent). Empty when absent.
+	MarkdownAlt string
 }
 
 // Link is one anchor collected from an HTML page (text + href). Only safe
@@ -165,7 +174,7 @@ func (s *Searcher) FetchWithOptions(ctx context.Context, rawURL string, opts Fet
 	// Extract the readable text from the complete body, THEN apply the caller's
 	// budget to the extracted text. This keeps small budgets useful: a 5 KB
 	// budget now yields 5 KB of real content instead of a fragment of <head>.
-	title, text, links := extractFetchText(mediaType, body)
+	title, text, links, hints := extractFetchText(mediaType, body)
 	text, truncated := truncateRunes(text, textLimit)
 	if truncated {
 		// Reserve space for the marker within the budget so the total text
@@ -189,6 +198,10 @@ func (s *Searcher) FetchWithOptions(ctx context.Context, rawURL string, opts Fet
 		Redirects:   redirectCount(resp),
 		Truncated:   truncated,
 		Bytes:       len(text),
+		DescribedBy: resolveRef(finalURL, firstNonEmpty(hints.describedBy,
+			findLinkHeader(resp.Header["Link"], "describedby", ""))),
+		MarkdownAlt: resolveRef(finalURL, firstNonEmpty(hints.markdownAlt,
+			findLinkHeader(resp.Header["Link"], "alternate", "text/markdown"))),
 	}, nil
 }
 
@@ -327,19 +340,19 @@ func validateFetchContentType(mediaType string) error {
 	return fmt.Errorf("%w: %q", ErrUnexpectedContentType, mediaType)
 }
 
-func extractFetchText(mediaType string, body []byte) (title, text string, links []Link) {
+func extractFetchText(mediaType string, body []byte) (title, text string, links []Link, hints htmlPageHints) {
 	if isHTMLMediaType(mediaType) || (mediaType == "" && looksLikeHTML(body)) {
 		return extractHTMLPage(body)
 	}
 	switch {
 	case isJSONMediaType(mediaType):
-		return "", prettyJSON(body), nil
+		return "", prettyJSON(body), nil, hints
 	case isXMLMediaType(mediaType):
-		return "", stripXMLTags(body), nil
+		return "", stripXMLTags(body), nil, hints
 	default:
 		// text/plain, text/markdown, text/csv, and other text/* keep
 		// newlines; only inline whitespace runs are collapsed.
-		return "", collapseInlineWhitespace(string(body)), nil
+		return "", collapseInlineWhitespace(string(body)), nil, hints
 	}
 }
 
@@ -367,10 +380,10 @@ func looksLikeHTML(body []byte) bool {
 	return strings.Contains(lower, "<html") || strings.Contains(lower, "<!doctype") || strings.Contains(lower, "<head")
 }
 
-func extractHTMLPage(body []byte) (title, text string, links []Link) {
+func extractHTMLPage(body []byte) (title, text string, links []Link, hints htmlPageHints) {
 	doc, err := html.Parse(strings.NewReader(string(body)))
 	if err != nil {
-		return "", collapseInlineWhitespace(stripTagsFallback(string(body))), nil
+		return "", collapseInlineWhitespace(stripTagsFallback(string(body))), nil, hints
 	}
 	title = htmlTitle(doc)
 
@@ -398,6 +411,24 @@ func extractHTMLPage(body []byte) (title, text string, links []Link) {
 				if href := attrValue(n, "href"); isSafeResultURL(href) {
 					collected = append(collected, Link{Text: textContent(n), Href: href})
 				}
+			case "link":
+				// llmstxt.org v2 discovery hints: rel="describedby" points
+				// at the covering llms.txt; rel="alternate"
+				// type="text/markdown" at a markdown version of this page.
+				if href := strings.TrimSpace(attrValue(n, "href")); href != "" {
+					rel := strings.ToLower(attrValue(n, "rel"))
+					typ := strings.ToLower(strings.TrimSpace(attrValue(n, "type")))
+					switch {
+					case tokenListContains(rel, "describedby"):
+						if hints.describedBy == "" {
+							hints.describedBy = href
+						}
+					case tokenListContains(rel, "alternate") && typ == "text/markdown":
+						if hints.markdownAlt == "" {
+							hints.markdownAlt = href
+						}
+					}
+				}
 			}
 		}
 		if n.Type == html.TextNode {
@@ -411,7 +442,7 @@ func extractHTMLPage(body []byte) (title, text string, links []Link) {
 		}
 	}
 	walk(doc, false)
-	return title, collapseInlineWhitespace(b.String()), collected
+	return title, collapseInlineWhitespace(b.String()), collected, hints
 }
 
 // htmlTitle resolves the page title with fallbacks: <title> first, then
