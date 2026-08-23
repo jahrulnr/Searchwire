@@ -152,3 +152,26 @@ func TestGitHubSkipsUnsafeURLs(t *testing.T) {
 		t.Fatalf("results = %#v err = %v", results, err)
 	}
 }
+
+func TestParseGitHubRepoResultsSanitizesAndTruncatesDescription(t *testing.T) {
+	body := []byte(`{"items":[{"full_name":"a/b","html_url":"https://github.com/a/b","description":"<p>` + strings.Repeat("x", 500) + `</p>"}]}`)
+	results, err := parseGitHubRepoResults(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snippet := results[0].snippet
+	if strings.Contains(snippet, "<") {
+		t.Fatalf("markup leaked into snippet: %q", snippet)
+	}
+	if len(snippet) > 320 {
+		t.Fatalf("description not truncated (%d bytes)", len(snippet))
+	}
+}
+
+func TestSanitizeSnippetStripsMarkupAndEntities(t *testing.T) {
+	got := sanitizeSnippet("<b>A &amp; B</b>\n\nsecond line")
+	want := "A & B second line"
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}

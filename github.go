@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"html"
 	"net/url"
 	"strings"
 )
@@ -128,7 +129,7 @@ func parseGitHubRepoResults(body []byte) ([]sourceResult, error) {
 		results = append(results, sourceResult{
 			title:   title,
 			url:     pageURL,
-			snippet: collapseWhitespace(item.Description),
+			snippet: truncateSnippet(sanitizeSnippet(item.Description), 320),
 			rank:    rank,
 		})
 	}
@@ -156,7 +157,7 @@ func parseGitHubIssueResults(body []byte) ([]sourceResult, error) {
 		results = append(results, sourceResult{
 			title:   title,
 			url:     pageURL,
-			snippet: truncateSnippet(collapseWhitespace(item.Body), 320),
+			snippet: truncateSnippet(sanitizeSnippet(item.Body), 320),
 			rank:    rank,
 		})
 	}
@@ -206,4 +207,16 @@ func truncateSnippet(value string, max int) string {
 		return value
 	}
 	return strings.TrimSpace(value[:max-3]) + "..."
+}
+
+// sanitizeSnippet strips HTML tags and decodes entities from a raw snippet
+// (GitHub issue/repo fields can carry markup), then collapses whitespace.
+// Run it before any length cap so tags never reach agent context.
+func sanitizeSnippet(value string) string {
+	value = collapseWhitespace(value)
+	if !strings.ContainsAny(value, "<&") {
+		return value
+	}
+	value = html.UnescapeString(stripTagsFallback(value))
+	return collapseWhitespace(value)
 }
