@@ -10,20 +10,30 @@ import (
 )
 
 func TestFetchHTMLExtractsTitleAndText(t *testing.T) {
+	// 2xx HTML responses auto-attach llms.txt metadata (best-effort), so
+	// this fixture is intentionally crafted so the probe sees a 404 and
+	// stops. The assertion below only inspects the page's own properties.
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
-		if r.URL.String() != "https://example.com/page" {
-			t.Fatalf("unexpected url %s", r.URL)
-		}
-		body := `<!doctype html><html><head><title>Hello Page</title>
+		switch r.URL.String() {
+		case "https://example.com/page":
+			body := `<!doctype html><html><head><title>Hello Page</title>
 <style>.x{color:red}</style><script>alert(1)</script></head>
 <body><h1>Welcome</h1><p>Readable body text.</p></body></html>`
-		return &http.Response{
-			StatusCode: 200,
-			Status:     "200 OK",
-			Header:     http.Header{"Content-Type": []string{"text/html; charset=utf-8"}},
-			Body:       io.NopCloser(strings.NewReader(body)),
-			Request:    r,
-		}, nil
+			return &http.Response{
+				StatusCode: 200,
+				Status:     "200 OK",
+				Header:     http.Header{"Content-Type": []string{"text/html; charset=utf-8"}},
+				Body:       io.NopCloser(strings.NewReader(body)),
+				Request:    r,
+			}, nil
+		default:
+			return &http.Response{
+				StatusCode: 404, Status: "404 Not Found",
+				Header:  http.Header{"Content-Type": []string{"text/plain"}},
+				Body:    io.NopCloser(strings.NewReader("missing")),
+				Request: r,
+			}, nil
+		}
 	})}
 
 	s := New(Config{HTTPClient: client})

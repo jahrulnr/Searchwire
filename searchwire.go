@@ -33,6 +33,7 @@ type Searcher struct {
 	limit              int
 	maxResponseSize    int64 // cap on extracted text returned by Fetch
 	maxRawResponseSize int64 // hard cap on raw HTML/plaintext download
+	tempDir            string
 	sources            []source
 	answerers          []answerProvider
 }
@@ -47,6 +48,7 @@ func New(cfg Config) *Searcher {
 		limit:              cfg.Limit,
 		maxResponseSize:    cfg.MaxResponseBytes,
 		maxRawResponseSize: cfg.MaxRawResponseBytes,
+		tempDir:            cfg.TempDir,
 		sources:            sourcesFromConfig(cfg),
 		answerers:          answerProvidersFromConfig(cfg),
 	}

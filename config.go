@@ -7,6 +7,12 @@ import (
 	"time"
 )
 
+// tempDirName is the per-process subdirectory created under Config.TempDir
+// (or the system temp dir) when an artifact is materialized for the agent.
+// Keeping all artifacts under one prefix makes cleanup and discovery easy
+// (a cron / startup hook can wipe the folder).
+const tempDirName = "searchwire"
+
 // Config configures a Searcher. The zero value uses built-in defaults and
 // zero-configuration sources. Optional integrations read credentials from
 // explicit fields first, then from named environment variables.
@@ -24,6 +30,12 @@ type Config struct {
 	Serper SerperConfig
 	Tavily TavilyConfig
 	GitHub GitHubConfig
+	// TempDir overrides the directory used to materialize truncated fetch
+	// artifacts. Empty falls back to os.TempDir() + "searchwire". The
+	// directory is created on demand. Each artifact is named
+	// "<UTC-timestamp>-<sha256-prefix>-<safe-name>.txt" so concurrent calls
+	// never collide.
+	TempDir string
 	// OpenRouter and OpenAI are optional answer providers. They do not add
 	// metasearch sources; a resolved API key enables the answer capability.
 	OpenRouter OpenRouterConfig

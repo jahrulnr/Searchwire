@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"net/url"
 	"path"
 	"strings"
@@ -239,6 +241,172 @@ func llmsTxtCandidates(canonical string) ([]string, error) {
 type htmlPageHints struct {
 	describedBy string
 	markdownAlt string
+}
+
+// llmsTxtAuto is the internal return shape of maybeFetchLLMsTxt: parsed
+// content + the final URL it came from. Either field is empty when the
+// probe produced nothing useful.
+type llmsTxtAuto struct {
+	parsed *LLMsTxt
+	url    string
+}
+
+// maybeFetchLLMsTxt is the best-effort auto-attach used by Fetch. It
+// returns nil (no error) unless a probe is actually warranted:
+//
+//   - The source fetch must have succeeded — non-2xx source responses skip
+//     the probe entirely. This matches the spec: an llms.txt is supposed
+//     to cover real, accessible pages, not 404s or 5xx.
+//   - The response media type must be HTML (text/html or
+//     application/xhtml+xml). Other formats (JSON, plain text, markdown,
+//     CSV, XML, RSS, Atom) skip the probe — they are not "pages" in the
+//     llmstxt.org v2 sense and following a JSON pointer to /llms.txt
+//     would be noise.
+//   - When the probe is run, it follows the same most-specific-then-root
+//     order as Searcher.FetchLLMsTxt, swallows 404/410/soft-404, and
+//     returns nil on any non-fatal failure.
+//
+// ctx is the caller's context so a cancelled fetch short-circuits the
+// probe without an extra round-trip.
+//
+// Implementation note: the probe deliberately uses a raw HTTP request
+// rather than recursing through FetchWithOptions. Otherwise a fixture
+// (or a real site) that returns the same HTML for every URL would cause
+// infinite recursion: page -> /llms.txt -> page -> /llms.txt -> ...
+func (s *Searcher) maybeFetchLLMsTxt(ctx context.Context, finalURL, sourceMediaType string) llmsTxtAuto {
+	if s == nil {
+		return llmsTxtAuto{}
+	}
+	// Only attach to successful HTML pages. Non-HTML content types and
+	// non-2xx statuses (already filtered by the caller before this helper
+	// is invoked, but the early-exit makes the contract explicit) are
+	// skipped without an HTTP round-trip.
+	if !isHTMLMediaType(sourceMediaType) {
+		return llmsTxtAuto{}
+	}
+	candidates, err := llmsTxtCandidates(finalURL)
+	if err != nil || len(candidates) == 0 {
+		return llmsTxtAuto{}
+	}
+	for _, cand := range candidates {
+		// Honour cancellation between probes.
+		if err := ctx.Err(); err != nil {
+			return llmsTxtAuto{}
+		}
+		parsed, probeURL, status, ok := s.probeLLMsTxtOnce(ctx, cand)
+		if !ok {
+			// Invalid URL / network failure / server error: the probe
+			// is not recoverable, stop. The source fetch already
+			// succeeded so the caller still gets a useful result;
+			// LLMsTxt stays nil.
+			return llmsTxtAuto{}
+		}
+		if status == 404 || status == 410 {
+			// The spec (and Searcher.FetchLLMsTxt) treat 404/410 as
+			// "no file at this level; try the next candidate". This is
+			// the only fallthrough case: a 5xx or any other non-2xx
+			// would be a server problem, not a missing file.
+			continue
+		}
+		if parsed != nil {
+			return llmsTxtAuto{parsed: parsed, url: probeURL}
+		}
+		// Soft 404 (SPA returns 2xx HTML at this URL) or invalid file
+		// content: try the next candidate.
+	}
+	return llmsTxtAuto{}
+}
+
+// probeLLMsTxtOnce performs a single low-level HTTP probe of a candidate
+// llms.txt URL and returns:
+//
+//   - parsed: the parsed LLMsTxt on success, or nil when the body did
+//     not parse (soft 404, SPA fallback, or content type outside the
+//     allowlist).
+//   - probeURL: the post-redirect URL of the response (always populated
+//     when ok is true; useful for diagnostics when parsed is nil).
+//   - status: the HTTP status code (0 when no response was received).
+//   - ok: true when the request completed and the caller can decide
+//     what to do next; false on any non-recoverable error (invalid URL,
+//     network failure, body too large, non-2xx / non-4xx status).
+//
+// The probe deliberately bypasses FetchWithOptions so the auto-attach
+// path does not recurse (FetchWithOptions would call this helper again).
+func (s *Searcher) probeLLMsTxtOnce(ctx context.Context, cand string) (*LLMsTxt, string, int, bool) {
+	if err := ctx.Err(); err != nil {
+		return nil, "", 0, false
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, cand, nil)
+	if err != nil {
+		return nil, "", 0, false
+	}
+	req.Header.Set("Accept", "text/markdown, text/plain, text/*;q=0.8, */*;q=0.1")
+	req.Header.Set("User-Agent", s.userAgent)
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, "", 0, false
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, s.maxRawResponseSize+1))
+	if err != nil {
+		return nil, "", 0, false
+	}
+	if int64(len(body)) > s.maxRawResponseSize {
+		return nil, "", 0, false
+	}
+
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		// Non-2xx: return status so the caller can decide whether the
+		// specific code warrants a fallthrough (404/410 do).
+		return nil, respFinalURL(resp), resp.StatusCode, true
+	}
+
+	mediaType, charset := parseMediaType(resp.Header.Get("Content-Type"))
+	body = decodeBody(body, charset)
+
+	// Allow text/markdown, text/plain, and the absence of a content type
+	// (some sites serve /llms.txt with no header). Reject anything else
+	// (HTML, JSON, etc.) to avoid misclassifying soft-404 pages as the
+	// real llms.txt.
+	if mediaType != "" && !isLLMsTxtAllowedMediaType(mediaType) {
+		return nil, respFinalURL(resp), resp.StatusCode, true
+	}
+
+	parsed, perr := ParseLLMsTxt(string(body))
+	if perr != nil {
+		// Body parsed (2xx) but not as llms.txt: let the caller try the
+		// next candidate. probeURL is still useful for diagnostics.
+		return nil, respFinalURL(resp), resp.StatusCode, true
+	}
+	return parsed, respFinalURL(resp), resp.StatusCode, true
+}
+
+// respFinalURL resolves the post-redirect URL of a response.
+func respFinalURL(resp *http.Response) string {
+	if resp == nil {
+		return ""
+	}
+	if resp.Request != nil && resp.Request.URL != nil {
+		return resp.Request.URL.String()
+	}
+	return ""
+}
+
+// isLLMsTxtAllowedMediaType is the probe's content-type allowlist. It is
+// narrower than Fetch's allowlist: llms.txt is documented as markdown or
+// plain text, never HTML. Unknown / missing types are accepted by the
+// caller (some servers omit Content-Type on .txt responses).
+func isLLMsTxtAllowedMediaType(mt string) bool {
+	switch mt {
+	case "text/markdown", "text/plain", "text/x-markdown", "application/markdown":
+		return true
+	}
+	if strings.HasPrefix(mt, "text/") {
+		return true
+	}
+	return false
 }
 
 // findLinkHeader scans RFC 8288 Link header values for the first field whose

@@ -7,10 +7,14 @@
 // one http(s) URL as readable text, with per-call controls for byte budget,
 // conditional GET, and Range requests; it also surfaces llmstxt.org v2
 // discovery hints (the covering llms.txt file and markdown alternates) when a
-// page advertises them, and Searcher.FetchLLMsTxt retrieves and parses a
-// site's llms.txt into structured sections.
-// Searcher.SearchWithOptions runs a
-// search with per-call options such as a different result limit than
+// page advertises them, and on 2xx HTML responses auto-attaches the parsed
+// covering llms.txt (Searcher.LLMsTxt / Searcher.LLMsTxtURL). Truncated
+// responses are also materialized to Config.TempDir (default
+// os.TempDir()/searchwire) and surfaced as Searcher.TempFile so the agent can
+// read the rest with file_read. Searcher.FetchLLMsTxt remains available as a
+// standalone probe for callers that want the parsed llms.txt without
+// fetching the page first. Searcher.SearchWithOptions runs
+// a search with per-call options such as a different result limit than
 // Config.Limit. When a supported provider API key is
 // configured, Searcher.Answer returns web-grounded answers and CanAnswer reports
 // that optional capability. The same library powers the searchwire-mcp stdio

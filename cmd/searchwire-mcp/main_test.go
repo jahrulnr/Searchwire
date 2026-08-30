@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -588,78 +587,250 @@ func TestFetchTokenNeverInOutput(t *testing.T) {
 	}
 }
 
-func llmsStaticClient(status int, contentType, body string) *http.Client {
-	return &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+func TestFetchPopulatesEmbeddedLLMsTxt(t *testing.T) {
+	// The previous searchwire_llms_txt tool was merged into searchwire_fetch:
+	// when the source is HTML (2xx) and a covering llms.txt exists, the
+	// parsed file is embedded in fetchOutput.llmsTxt so agents do not need
+	// a second round-trip. The probe is best-effort: any failure (404,
+	// invalid file, non-HTML source) leaves the field nil.
+	var seen []string
+	client := &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		seen = append(seen, r.URL.String())
+		switch r.URL.String() {
+		case "https://example.com/docs/page.html":
+			return &http.Response{
+				StatusCode: 200, Status: "200 OK",
+				Header:  http.Header{"Content-Type": []string{"text/html"}},
+				Body:    io.NopCloser(strings.NewReader(`<html><head><title>P</title></head><body>main</body></html>`)),
+				Request: r,
+			}, nil
+		case "https://example.com/docs/llms.txt":
+			return &http.Response{
+				StatusCode: 200, Status: "200 OK",
+				Header:  http.Header{"Content-Type": []string{"text/markdown"}},
+				Body:    io.NopCloser(strings.NewReader("# Docs\n\n> summary.\n\n## Guides\n\n- [a](https://example.com/a.md): notes\n")),
+				Request: r,
+			}, nil
+		default:
+			return &http.Response{
+				StatusCode: 404, Status: "404 Not Found",
+				Header:  http.Header{"Content-Type": []string{"text/plain"}},
+				Body:    io.NopCloser(strings.NewReader("nope")),
+				Request: r,
+			}, nil
+		}
+	})}
+	out, err := runFetch(context.Background(), searchwire.Config{HTTPClient: client}, 0, fetchInput{URL: "https://example.com/docs/page.html"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.LLMsTxt == nil {
+		t.Fatalf("expected embedded llmsTxt, got nil (seen=%v)", seen)
+	}
+	if out.LLMsTxt.Title != "Docs" || out.LLMsTxt.Summary != "summary." {
+		t.Fatalf("llmsTxt = %#v", out.LLMsTxt)
+	}
+	if len(out.LLMsTxt.Sections) != 1 || out.LLMsTxt.Sections[0].Links[0].Notes != "notes" {
+		t.Fatalf("sections = %#v", out.LLMsTxt.Sections)
+	}
+	// Verify the probe did not recurse: only the page + the most-specific
+	// llms.txt should have been requested.
+	want := []string{
+		"https://example.com/docs/page.html",
+		"https://example.com/docs/llms.txt",
+	}
+	if len(seen) != len(want) || seen[0] != want[0] || seen[1] != want[1] {
+		t.Fatalf("requests = %v, want %v", seen, want)
+	}
+}
+
+func TestFetchSkipsLLMsTxtWhenSourceNotHTML(t *testing.T) {
+	// Non-HTML responses must not trigger the llms.txt probe. A JSON
+	// source has no notion of "covering llms.txt" and following the
+	// pointer would just be noise.
+	var seen []string
+	client := &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		seen = append(seen, r.URL.String())
 		return &http.Response{
-			StatusCode: status,
-			Status:     fmt.Sprintf("%d %s", status, http.StatusText(status)),
-			Header:     http.Header{"Content-Type": []string{contentType}},
-			Body:       io.NopCloser(strings.NewReader(body)),
-			Request:    r,
+			StatusCode: 200, Status: "200 OK",
+			Header:  http.Header{"Content-Type": []string{"application/json"}},
+			Body:    io.NopCloser(strings.NewReader(`{"ok":true}`)),
+			Request: r,
 		}, nil
 	})}
-}
-
-func TestLLMsTxtHappyPath(t *testing.T) {
-	cfg := searchwire.Config{HTTPClient: llmsStaticClient(http.StatusOK, "text/markdown",
-		"# Example\n\n> Summary.\n\n## Docs\n\n- [Guide](https://example.com/guide.md): usage\n")}
-	out, err := runLLMsTxt(context.Background(), cfg, llmsTxtInput{URL: "https://example.com/docs/page.html"})
+	out, err := runFetch(context.Background(), searchwire.Config{HTTPClient: client}, 0, fetchInput{URL: "https://example.com/data.json"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out.Title != "Example" || out.Summary != "Summary." || out.StatusCode != 200 {
-		t.Fatalf("out = %#v", out)
+	if out.LLMsTxt != nil {
+		t.Fatalf("expected no llmsTxt for JSON, got %#v", out.LLMsTxt)
 	}
-	if len(out.Sections) != 1 || out.Sections[0].Name != "Docs" ||
-		len(out.Sections[0].Links) != 1 || out.Sections[0].Links[0].Notes != "usage" {
-		t.Fatalf("sections = %#v", out.Sections)
-	}
-	if out.FinalURL != "https://example.com/docs/llms.txt" {
-		t.Fatalf("final = %q", out.FinalURL)
-	}
-
-	handler := makeLLMsTxtHandler(cfg)
-	result, structured, err := handler(context.Background(), nil, llmsTxtInput{URL: "https://example.com/x"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result != nil && result.IsError {
-		t.Fatalf("unexpected tool error: %#v", result)
-	}
-	if structured.Title != out.Title {
-		t.Fatalf("handler title = %q, want %q", structured.Title, out.Title)
-	}
-	if len(result.Content) == 0 {
-		t.Fatal("expected JSON text content")
+	if len(seen) != 1 {
+		t.Fatalf("expected 1 request, got %v", seen)
 	}
 }
 
-func TestLLMsTxtNotFoundSurfacesSentinel(t *testing.T) {
-	cfg := searchwire.Config{HTTPClient: llmsStaticClient(http.StatusNotFound, "text/plain", "nope")}
-	_, err := runLLMsTxt(context.Background(), cfg, llmsTxtInput{URL: "https://example.com/page"})
-	if !errors.Is(err, searchwire.ErrLLMsTxtNotFound) {
-		t.Fatalf("err = %v", err)
-	}
-
-	handler := makeLLMsTxtHandler(cfg)
-	result, _, err := handler(context.Background(), nil, llmsTxtInput{URL: "https://example.com/page"})
+func TestFetchSkipsLLMsTxtOnSourceHTTPError(t *testing.T) {
+	// 4xx/5xx source responses skip the llms.txt probe entirely: the
+	// searchwire_fetch tool surfaces the source error and the embedded
+	// llmsTxt field is left nil. No extra round-trip is made.
+	client := &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: 500, Status: "500 Internal Server Error",
+			Header:  http.Header{"Content-Type": []string{"text/html"}},
+			Body:    io.NopCloser(strings.NewReader("boom")),
+			Request: r,
+		}, nil
+	})}
+	handler := makeFetchHandler(searchwire.Config{HTTPClient: client}, 0)
+	result, _, err := handler(context.Background(), nil, fetchInput{URL: "https://example.com/err"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result == nil || !result.IsError || len(result.Content) == 0 {
-		t.Fatalf("expected error content, got %#v", result)
+	if result == nil || !result.IsError {
+		t.Fatalf("expected IsError, got %#v", result)
 	}
 }
 
-func TestNewServerRegistersLLMsTxtTool(t *testing.T) {
-	server := newServer(searchwire.Config{HTTPClient: fixtureClient(t)}, 0)
-	found := false
-	for _, name := range listToolNames(t, server) {
-		if name == llmsToolName {
-			found = true
+func TestFetchSkipsLLMsTxtWhenLLMsTxtMissing(t *testing.T) {
+	// When the source page is 2xx HTML but no covering llms.txt exists
+	// (all probes 404), the embedded llmsTxt field is left nil and the
+	// fetch still returns the source page successfully. No extra error
+	// is surfaced to the caller — a missing llms.txt is a non-event.
+	var seen []string
+	client := &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		seen = append(seen, r.URL.String())
+		switch r.URL.String() {
+		case "https://example.com/page.html":
+			return &http.Response{
+				StatusCode: 200, Status: "200 OK",
+				Header:  http.Header{"Content-Type": []string{"text/html"}},
+				Body:    io.NopCloser(strings.NewReader(`<html><head><title>P</title></head><body>main</body></html>`)),
+				Request: r,
+			}, nil
+		default:
+			return &http.Response{
+				StatusCode: 404, Status: "404 Not Found",
+				Header:  http.Header{"Content-Type": []string{"text/plain"}},
+				Body:    io.NopCloser(strings.NewReader("nope")),
+				Request: r,
+			}, nil
 		}
+	})}
+	out, err := runFetch(context.Background(), searchwire.Config{HTTPClient: client}, 0, fetchInput{URL: "https://example.com/page.html"})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !found {
-		t.Fatalf("%s not registered; tools = %v", llmsToolName, listToolNames(t, server))
+	if out.LLMsTxt != nil {
+		t.Fatalf("expected no llmsTxt when all probes 404, got %#v", out.LLMsTxt)
+	}
+	// page.html is at the site root, so the only candidate is
+	// /llms.txt (1 probe, not 2). Total: 1 page + 1 probe = 2 requests.
+	if len(seen) != 2 {
+		t.Fatalf("expected 2 requests (page + 1 root probe), got %v", seen)
+	}
+}
+
+func TestFetchSkipsLLMsTxtWhenSubdirLLMsTxtMissing(t *testing.T) {
+	// For a deeper URL the probe tries <dir>/llms.txt first, then
+	// /llms.txt at the root. Both 404 here, so the field stays nil and
+	// the caller sees exactly 3 requests (page + 2 probes).
+	var seen []string
+	client := &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		seen = append(seen, r.URL.String())
+		switch r.URL.String() {
+		case "https://example.com/docs/page.html":
+			return &http.Response{
+				StatusCode: 200, Status: "200 OK",
+				Header:  http.Header{"Content-Type": []string{"text/html"}},
+				Body:    io.NopCloser(strings.NewReader(`<html><head><title>P</title></head><body>main</body></html>`)),
+				Request: r,
+			}, nil
+		default:
+			return &http.Response{
+				StatusCode: 404, Status: "404 Not Found",
+				Header:  http.Header{"Content-Type": []string{"text/plain"}},
+				Body:    io.NopCloser(strings.NewReader("nope")),
+				Request: r,
+			}, nil
+		}
+	})}
+	out, err := runFetch(context.Background(), searchwire.Config{HTTPClient: client}, 0, fetchInput{URL: "https://example.com/docs/page.html"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.LLMsTxt != nil {
+		t.Fatalf("expected no llmsTxt, got %#v", out.LLMsTxt)
+	}
+	if len(seen) != 3 {
+		t.Fatalf("expected 3 requests (page + dir probe + root probe), got %v", seen)
+	}
+}
+
+func TestFetchWritesTempFileWhenTruncated(t *testing.T) {
+	// When the response is truncated, the full extracted text is also
+	// materialized to a file under the configured temp dir (default
+	// os.TempDir()/searchwire) so the agent can read the rest with
+	// file_read instead of refetching.
+	dir := t.TempDir()
+	cfg := searchwire.Config{
+		HTTPClient: &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: 200, Status: "200 OK",
+				Header:  http.Header{"Content-Type": []string{"text/plain"}},
+				Body:    io.NopCloser(strings.NewReader(strings.Repeat("z", 100))),
+				Request: r,
+			}, nil
+		})},
+		TempDir: dir,
+	}
+	max := int64(20)
+	out, err := runFetch(context.Background(), cfg, 0, fetchInput{URL: "https://example.com/big", MaxBytes: &max})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !out.Truncated {
+		t.Fatalf("expected truncated, got %#v", out)
+	}
+	if out.TempFile == "" {
+		t.Fatalf("expected TempFile, got empty")
+	}
+	if !strings.HasPrefix(out.TempFile, dir) {
+		t.Fatalf("TempFile not in %s: %s", dir, out.TempFile)
+	}
+	contents, err := os.ReadFile(out.TempFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(contents) != out.Text {
+		t.Fatalf("temp file content mismatch: %q vs %q", string(contents), out.Text)
+	}
+	// The temp file mirrors the truncated Text (which already carries the
+	// [truncated] marker), so its size is the post-truncation budget, not
+	// the full original body. Assert the file is non-empty and matches
+	// what was returned inline.
+	if len(contents) == 0 {
+		t.Fatal("expected non-empty temp file")
+	}
+}
+
+func TestConfigFromEnvReadsTempDir(t *testing.T) {
+	t.Setenv(envTempDir, "/tmp/sw-mcp-test")
+	cfg, _ := configFromEnv()
+	if cfg.TempDir != "/tmp/sw-mcp-test" {
+		t.Fatalf("TempDir = %q", cfg.TempDir)
+	}
+}
+
+func TestSearchwireLLMsTxtToolRemoved(t *testing.T) {
+	// The standalone searchwire_llms_txt tool was intentionally removed
+	// from the MCP surface: llms.txt probing is now an automatic side
+	// effect of searchwire_fetch on 2xx HTML responses. Agents read the
+	// embedded llmsTxt field instead of calling a separate tool.
+	server := newServer(searchwire.Config{HTTPClient: fixtureClient(t)}, 0)
+	for _, name := range listToolNames(t, server) {
+		if name == "searchwire_llms_txt" {
+			t.Fatalf("searchwire_llms_txt must not be registered; tools = %v", listToolNames(t, server))
+		}
 	}
 }

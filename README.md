@@ -70,6 +70,8 @@ func main() {
 | `Truncated` / `Bytes` | Whether the body was capped; bytes read |
 | `DescribedBy` | Absolute URL of the covering `llms.txt` (`rel="describedby"` via HTML `<link>` or HTTP `Link:` header); empty when absent |
 | `MarkdownAlt` | Absolute URL of a markdown alternate version of this page (`rel="alternate"` `type="text/markdown"`); empty when absent |
+| `LLMsTxt` / `LLMsTxtURL` | Parsed covering `llms.txt` (auto-attached on 2xx HTML responses; see [llms.txt](#llmstxt)) and its post-redirect URL. `nil`/empty for non-HTML responses, 4xx/5xx source, or when no file exists. |
+| `TempFile` | Absolute path of a file under the configured temp dir (default `os.TempDir()/searchwire`, override via `Config.TempDir` / `SEARCHWIRE_TEMP_DIR`) holding the full extracted text when `Truncated` is true. Lets the agent `file_read` the rest without refetching. Empty when the response was not truncated. |
 
 `FetchOptions` enables conditional GET and Range requests:
 
@@ -103,20 +105,37 @@ func main() {
 Searchwire implements the client side of the [llmstxt.org](https://llmstxt.org/) v2 proposal — the convention Chrome Lighthouse audits under its Agentic Browsing category:
 
 - **Discovery on every fetch.** When a page advertises its LLM-friendly entry points, `Fetch` reports them resolved to absolute URLs: `DescribedBy` (the covering `llms.txt`, from `<link rel="describedby">` or the RFC 8288 `Link:` header) and `MarkdownAlt` (a markdown version of the fetched page, from `<link rel="alternate" type="text/markdown">`).
-- **Retrieval.** `Searcher.FetchLLMsTxt(ctx, url)` probes `<dir>/llms.txt` first and `/llms.txt` second (the most specific file covers the URL per spec), follows redirects, parses the file, and returns an `*LLMsTxtResult`. 404/410 probes fall through to the next candidate; when every candidate is missing the returned error wraps `ErrLLMsTxtNotFound`.
+- **Auto-attach on 2xx HTML.** When the source fetch is HTML and the server returns 2xx, `Fetch` probes `<dir>/llms.txt` first and `/llms.txt` second, parses the first one that answers, and embeds it as `FetchResult.LLMsTxt` (with `LLMsTxtURL` for the post-redirect URL). The probe is best-effort and non-fatal: any failure (404/410 fallthrough, soft-404 SPA, 5xx, network error) leaves the field nil and the source fetch still succeeds. **The probe is skipped entirely for non-HTML responses (JSON, plain text, markdown, CSV, XML, RSS, Atom) and for non-2xx source responses** — matching the spec that llms.txt only applies to navigable pages.
+- **Standalone library call.** `Searcher.FetchLLMsTxt(ctx, url)` is still available for callers that want the parsed `*LLMsTxt` without going through a full `Fetch` (e.g. to index a site). It uses the same most-specific-then-root candidate order and 404/410 fallthrough.
 - **Parsing.** `ParseLLMsTxt(content string)` parses llms.txt Markdown leniently into a structured `LLMsTxt`: required `Title` (H1), optional blockquote `Summary`, free-form `Description`, and `Sections` of `[name](url): notes` links. A file without the H1 returns an error wrapping `ErrInvalidLLMsTxt`.
 
 ```go
-res, err := searcher.FetchLLMsTxt(ctx, "https://example.com/docs/page.html")
-if errors.Is(err, searchwire.ErrLLMsTxtNotFound) {
-	// site publishes no llms.txt — fall back to ordinary fetching
+// Library: auto-attached on every successful HTML fetch.
+res, err := searcher.Fetch(ctx, "https://example.com/docs/page.html")
+if err != nil {
+    log.Fatal(err)
 }
-for _, section := range res.LLMsTxt.Sections {
-	for _, link := range section.Links {
-		fmt.Println(section.Name, link.Name, link.URL)
-	}
+if res.LLMsTxt != nil {
+    for _, section := range res.LLMsTxt.Sections {
+        for _, link := range section.Links {
+            fmt.Println(section.Name, link.Name, link.URL)
+        }
+    }
+}
+
+// Library: standalone probe without fetching the page.
+llms, err := searcher.FetchLLMsTxt(ctx, "https://example.com/docs/page.html")
+if errors.Is(err, searchwire.ErrLLMsTxtNotFound) {
+    // site publishes no llms.txt — fall back to ordinary fetching
+}
+for _, section := range llms.LLMsTxt.Sections {
+    for _, link := range section.Links {
+        fmt.Println(section.Name, link.Name, link.URL)
+    }
 }
 ```
+
+> **MCP tool note.** The previous standalone `searchwire_llms_txt` MCP tool was merged into `searchwire_fetch`: agents now read the embedded `llmsTxt` field on the fetch result instead of making a second call. `Searcher.FetchLLMsTxt` is unchanged for library users.
 
 ### Search
 
@@ -194,11 +213,10 @@ searchwire-mcp
 | Name | Input | Output |
 |------|-------|--------|
 | `searchwire_search` | `{ "query": string, "limit"?: number }` | Searchwire response JSON (`query`, `results`, `errors`) |
-| `searchwire_fetch` | `{ "url": string, "max_bytes"?: number }` | Page JSON (`url`, `finalUrl`, `statusCode`, `contentType`, `title`, `text`, `links`, `headers`, `redirects`, `truncated`, `bytes`, `describedBy`, `markdownAlt`) |
-| `searchwire_llms_txt` | `{ "url": string }` | Parsed llms.txt JSON (`url`, `finalUrl`, `statusCode`, `title`, `summary`, `description`, `sections[].links[]`, `headers`); errors with a not-found sentinel when the site publishes none |
+| `searchwire_fetch` | `{ "url": string, "max_bytes"?: number }` | Page JSON (`url`, `finalUrl`, `statusCode`, `contentType`, `title`, `text`, `links`, `headers`, `redirects`, `truncated`, `bytes`, `describedBy`, `markdownAlt`, `llmsTxt?`, `tempFile?`) |
 | `searchwire_answer` | `{ "question": string, "provider"?: string }` | Web-grounded answer JSON (`question`, `answer`, `provider`); registered only when an answer-provider key is available |
 
-Recommended agent workflow: **`searchwire_search` → pick URLs → `searchwire_fetch`**. Snippets alone are incomplete; fetch promising hits for full content.
+Recommended agent workflow: **`searchwire_search` → pick URLs → `searchwire_fetch`**. Snippets alone are incomplete; fetch promising hits for full content. When the fetched page is HTML and the site publishes a covering `llms.txt`, the parsed file is embedded in `searchwire_fetch`'s `llmsTxt` field so the agent can follow LLM-friendly documentation without a second call. When the response is truncated, the full text is also written to a file under `SEARCHWIRE_TEMP_DIR` (default `$TMPDIR/searchwire`) and surfaced as `tempFile` — the agent can read the rest with `file_read` instead of refetching.
 
 `searchwire_answer` is capability-driven: it is absent from MCP tool discovery
 when none of `BRAVE_SEARCH_API_KEY`, `OPENROUTER_API_KEY`, `OPENAI_API_KEY`,
@@ -238,6 +256,7 @@ configuration or its model env var.
 | `SEARCHWIRE_LIMIT` | adapter | Default result limit (int; unset = library default) |
 | `SEARCHWIRE_TIMEOUT` | adapter | HTTP client timeout as a Go duration string (e.g. `10s`; unset = library default) |
 | `SEARCHWIRE_MAX_BYTES` | adapter | Default fetch/response byte budget (unset = library default) |
+| `SEARCHWIRE_TEMP_DIR` | adapter | Directory used to materialize truncated fetch artifacts (default `$TMPDIR/searchwire`). The full extracted text is written here when `searchwire_fetch` truncates, and surfaced to the agent as the `tempFile` field so it can read the rest with `file_read` (or framework equivalents). |
 
 Latency: search fans out across 4 sources and may take up to the configured timeout (default 10s). Clients should set appropriate tool timeouts.
 

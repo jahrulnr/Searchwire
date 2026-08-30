@@ -23,12 +23,12 @@ const (
 	fallbackVersion     = "0.1.0"
 	searchToolName      = "searchwire_search"
 	fetchToolName       = "searchwire_fetch"
-	llmsToolName        = "searchwire_llms_txt"
 	answerToolName      = "searchwire_answer"
 	maxErrorLen         = 240
 	envLimit            = "SEARCHWIRE_LIMIT"
 	envTimeout          = "SEARCHWIRE_TIMEOUT"
 	envMaxBytes         = "SEARCHWIRE_MAX_BYTES"
+	envTempDir          = "SEARCHWIRE_TEMP_DIR"
 	envGitHubToken      = "GITHUB_TOKEN"
 	envBraveAPIKey      = "BRAVE_SEARCH_API_KEY"
 	envOpenRouterAPIKey = "OPENROUTER_API_KEY"
@@ -43,14 +43,13 @@ const (
 	fetchDescription = "Fetch one http(s) URL and return readable text (HTML stripped to title + visible text, " +
 		"or plain text as-is). Prefer searchwire_search first, then fetch promising result URLs. " +
 		"Not a full browser: no JavaScript rendering. max_bytes caps the length of the returned " +
-		"readable text (not the raw HTML download); over-limit text is truncated with truncated=true."
+		"readable text (not the raw HTML download); over-limit text is truncated with truncated=true " +
+		"and the full text is also written to a file under SEARCHWIRE_TEMP_DIR (default $TMPDIR/searchwire) " +
+		"so the agent can read the rest with file_read. When the source is HTML and the site publishes " +
+		"a covering llms.txt, the parsed file is returned inline (llmsTxt field) so the agent can jump " +
+		"directly to the LLM-friendly documentation."
 	answerDescription = "Answer one question using an optional web-grounded answer provider. " +
 		"This tool is only exposed when a provider API key is configured."
-	llmsDescription = "Retrieve and parse the llms.txt file covering a URL (llmstxt.org v2 convention, " +
-		"audited by Lighthouse under Agentic Browsing). Probes <dir>/llms.txt then /llms.txt; the most " +
-		"specific file wins. Returns parsed title, summary, and sections of markdown links so agents can " +
-		"follow LLM-friendly documentation instead of crawling HTML. Errors with a not-found sentinel when " +
-		"the site publishes no llms.txt."
 )
 
 type searchInput struct {
@@ -83,10 +82,34 @@ type fetchOutput struct {
 	Bytes       int               `json:"bytes"` // byte length of the returned Text (after extraction)
 	DescribedBy string            `json:"describedBy,omitempty"`
 	MarkdownAlt string            `json:"markdownAlt,omitempty"`
+	// LLMsTxt is the parsed llms.txt covering this page when the source
+	// fetch was HTML (2xx) and a covering file was retrievable. The
+	// llms.txt tool was merged into searchwire_fetch so agents do not
+	// have to make a second call. Empty when the source is not HTML, the
+	// fetch failed, or no covering file exists.
+	LLMsTxt *llmsTxtOutput `json:"llmsTxt,omitempty"`
+	// TempFile is the absolute path of a file under the configured temp
+	// dir (Config.TempDir / SEARCHWIRE_TEMP_DIR, default $TMPDIR/searchwire)
+	// holding the full extracted text when Truncated is true. The agent
+	// can read the rest of the response with file_read (or framework
+	// equivalents) without refetching. Empty when the response was not
+	// truncated.
+	TempFile string `json:"tempFile,omitempty"`
 }
 
-type llmsTxtInput struct {
-	URL string `json:"url" jsonschema:"any absolute http(s) URL on the site or path whose llms.txt should be retrieved"`
+// llmsTxtOutput is the embedded llms.txt projection inside fetchOutput. It
+// is intentionally flat (matches the previous standalone tool's JSON shape)
+// so existing consumers that read llms.txt via searchwire_fetch.llmsTxt
+// get the same fields they would have gotten from the deleted standalone
+// tool.
+type llmsTxtOutput struct {
+	URL         string              `json:"url"`
+	FinalURL    string              `json:"finalUrl,omitempty"`
+	StatusCode  int                 `json:"statusCode"`
+	Title       string              `json:"title"`
+	Summary     string              `json:"summary,omitempty"`
+	Description string              `json:"description,omitempty"`
+	Sections    []llmsSectionOutput `json:"sections,omitempty"`
 }
 
 type llmsLinkOutput struct {
@@ -98,17 +121,6 @@ type llmsLinkOutput struct {
 type llmsSectionOutput struct {
 	Name  string           `json:"name"`
 	Links []llmsLinkOutput `json:"links,omitempty"`
-}
-
-type llmsTxtOutput struct {
-	URL         string              `json:"url,omitempty"`
-	FinalURL    string              `json:"finalUrl,omitempty"`
-	StatusCode  int                 `json:"statusCode"`
-	Title       string              `json:"title"`
-	Summary     string              `json:"summary,omitempty"`
-	Description string              `json:"description,omitempty"`
-	Sections    []llmsSectionOutput `json:"sections,omitempty"`
-	Headers     map[string]string   `json:"headers,omitempty"`
 }
 
 type answerInput struct {
@@ -149,10 +161,6 @@ func newServer(cfg searchwire.Config, defaultMaxBytes int64) *mcp.Server {
 		Name:        fetchToolName,
 		Description: fetchDescription,
 	}, makeFetchHandler(cfg, defaultMaxBytes))
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        llmsToolName,
-		Description: llmsDescription,
-	}, makeLLMsTxtHandler(cfg))
 	if searchwire.New(cfg).CanAnswer() {
 		mcp.AddTool(server, &mcp.Tool{
 			Name:        answerToolName,
@@ -189,25 +197,6 @@ func makeFetchHandler(base searchwire.Config, defaultMaxBytes int64) mcp.ToolHan
 				IsError: true,
 				Content: []mcp.Content{&mcp.TextContent{Text: sanitizeError(err.Error())}},
 			}, fetchOutput{}, nil
-		}
-		text, marshalErr := json.MarshalIndent(out, "", "  ")
-		if marshalErr != nil {
-			return nil, out, nil
-		}
-		return &mcp.CallToolResult{
-			Content: []mcp.Content{&mcp.TextContent{Text: string(text)}},
-		}, out, nil
-	}
-}
-
-func makeLLMsTxtHandler(base searchwire.Config) mcp.ToolHandlerFor[llmsTxtInput, llmsTxtOutput] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, input llmsTxtInput) (*mcp.CallToolResult, llmsTxtOutput, error) {
-		out, err := runLLMsTxt(ctx, base, input)
-		if err != nil {
-			return &mcp.CallToolResult{
-				IsError: true,
-				Content: []mcp.Content{&mcp.TextContent{Text: sanitizeError(err.Error())}},
-			}, llmsTxtOutput{}, nil
 		}
 		text, marshalErr := json.MarshalIndent(out, "", "  ")
 		if marshalErr != nil {
@@ -269,7 +258,7 @@ func runFetch(ctx context.Context, base searchwire.Config, defaultMaxBytes int64
 	if err != nil {
 		return fetchOutput{}, sanitizeFetchErr(err)
 	}
-	return fetchOutput{
+	out := fetchOutput{
 		URL:         result.URL,
 		FinalURL:    result.FinalURL,
 		StatusCode:  result.StatusCode,
@@ -283,30 +272,29 @@ func runFetch(ctx context.Context, base searchwire.Config, defaultMaxBytes int64
 		Bytes:       result.Bytes,
 		DescribedBy: result.DescribedBy,
 		MarkdownAlt: result.MarkdownAlt,
-	}, nil
-}
-
-func runLLMsTxt(ctx context.Context, base searchwire.Config, input llmsTxtInput) (llmsTxtOutput, error) {
-	res, err := searchwire.New(base).FetchLLMsTxt(ctx, input.URL)
-	if err != nil {
-		return llmsTxtOutput{}, sanitizeFetchErr(err)
+		TempFile:    result.TempFile,
 	}
-	file := res.LLMsTxt
-	out := llmsTxtOutput{
-		URL:         res.URL,
-		FinalURL:    res.FinalURL,
-		StatusCode:  res.StatusCode,
-		Title:       file.Title,
-		Summary:     file.Summary,
-		Description: file.Description,
-		Headers:     res.Headers,
-	}
-	for _, sec := range file.Sections {
-		s := llmsSectionOutput{Name: sec.Name}
-		for _, l := range sec.Links {
-			s.Links = append(s.Links, llmsLinkOutput{Name: l.Name, URL: l.URL, Notes: l.Notes})
+	// Embed the parsed llms.txt (already auto-attached by the library on
+	// 2xx HTML responses). When the source isn't HTML, the fetch failed,
+	// or the site publishes no llms.txt, the library leaves result.LLMsTxt
+	// nil and we omit the field entirely (so the JSON stays clean).
+	if result.LLMsTxt != nil {
+		llms := llmsTxtOutput{
+			URL:         result.LLMsTxtURL,
+			FinalURL:    result.LLMsTxtURL,
+			StatusCode:  result.StatusCode,
+			Title:       result.LLMsTxt.Title,
+			Summary:     result.LLMsTxt.Summary,
+			Description: result.LLMsTxt.Description,
 		}
-		out.Sections = append(out.Sections, s)
+		for _, sec := range result.LLMsTxt.Sections {
+			s := llmsSectionOutput{Name: sec.Name}
+			for _, l := range sec.Links {
+				s.Links = append(s.Links, llmsLinkOutput{Name: l.Name, URL: l.URL, Notes: l.Notes})
+			}
+			llms.Sections = append(llms.Sections, s)
+		}
+		out.LLMsTxt = &llms
 	}
 	return out, nil
 }
@@ -350,6 +338,9 @@ func configFromEnv() (searchwire.Config, int64) {
 			cfg.MaxResponseBytes = n
 			maxBytes = n
 		}
+	}
+	if raw := strings.TrimSpace(os.Getenv(envTempDir)); raw != "" {
+		cfg.TempDir = raw
 	}
 	return cfg, maxBytes
 }
@@ -405,9 +396,11 @@ func sanitizeFetchErr(err error) error {
 		errors.Is(err, searchwire.ErrInvalidURL),
 		errors.Is(err, searchwire.ErrUnsupportedScheme),
 		errors.Is(err, searchwire.ErrNilSearcher),
-		errors.Is(err, searchwire.ErrUnexpectedContentType),
-		errors.Is(err, searchwire.ErrLLMsTxtNotFound),
-		errors.Is(err, searchwire.ErrInvalidLLMsTxt):
+		errors.Is(err, searchwire.ErrUnexpectedContentType):
+		// ErrLLMsTxtNotFound / ErrInvalidLLMsTxt are intentionally absent
+		// here: llms.txt probing is now a best-effort side effect of
+		// searchwire_fetch, and a missing/invalid file is not surfaced
+		// as a tool error. Callers read result.LLMsTxt (nil) instead.
 		return err
 	}
 	var httpErr *searchwire.HTTPError

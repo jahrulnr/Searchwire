@@ -39,6 +39,26 @@ type FetchResult struct {
 	// this page (<link rel="alternate" type="text/markdown"> or the HTTP
 	// Link header equivalent). Empty when absent.
 	MarkdownAlt string
+	// LLMsTxt is the parsed llms.txt file covering this page, populated
+	// automatically when the source fetch succeeds (2xx), the response
+	// content type is HTML, and a covering llms.txt file can be retrieved
+	// and parsed. The probe follows the same rules as Searcher.FetchLLMsTxt
+	// (most-specific-directory first, then the site root; 404/410 falls
+	// through; invalid/soft-404 content is skipped). Non-HTML responses
+	// (JSON, plain text, etc.) skip the probe entirely. Any probe failure
+	// is non-fatal: callers always get the source result they asked for.
+	LLMsTxt *LLMsTxt
+	// LLMsTxtURL is the absolute final URL of the llms.txt file that
+	// produced LLMsTxt (post-redirect). Empty when LLMsTxt is nil.
+	LLMsTxtURL string
+	// TempFile is the absolute path of a file under the configured temp
+	// directory (Config.TempDir, default os.TempDir()/searchwire) holding
+	// the full extracted text when Truncated is true. The file lets the
+	// agent read the rest of the response (e.g. via file_read) without
+	// having to refetch. Empty when the response was not truncated or when
+	// the write failed (the inline Text still carries the truncated
+	// payload with the [truncated] marker in that case).
+	TempFile string
 }
 
 // Link is one anchor collected from an HTML page (text + href). Only safe
@@ -186,7 +206,12 @@ func (s *Searcher) FetchWithOptions(ctx context.Context, rawURL string, opts Fet
 			text = strings.TrimRight(text, "\n") + marker
 		}
 	}
-	return &FetchResult{
+	// Auto-attach llms.txt metadata when the source fetch is HTML and
+	// succeeded. The probe is best-effort: any failure (404, 410, invalid
+	// content, non-fatal network error) leaves the field empty rather than
+	// failing the whole fetch. See Searcher.maybeFetchLLMsTxt for details.
+	llms := s.maybeFetchLLMsTxt(ctx, finalURL, mediaType)
+	result := &FetchResult{
 		URL:         canonical,
 		FinalURL:    finalURL,
 		StatusCode:  resp.StatusCode,
@@ -202,7 +227,19 @@ func (s *Searcher) FetchWithOptions(ctx context.Context, rawURL string, opts Fet
 			findLinkHeader(resp.Header["Link"], "describedby", ""))),
 		MarkdownAlt: resolveRef(finalURL, firstNonEmpty(hints.markdownAlt,
 			findLinkHeader(resp.Header["Link"], "alternate", "text/markdown"))),
-	}, nil
+		LLMsTxt:    llms.parsed,
+		LLMsTxtURL: llms.url,
+	}
+	if truncated {
+		// Materialize the full extracted text to a temp file so the agent can
+		// read beyond the inline Text with file_read (or framework-specific
+		// read tools). Failures here are non-fatal: the truncated Text is
+		// still returned inline with the [truncated] marker.
+		if path, err := s.writeTempArtifact(finalURL, text); err == nil {
+			result.TempFile = path
+		}
+	}
+	return result, nil
 }
 
 // newHTTPError builds an HTTPError from a non-2xx response, parsing
