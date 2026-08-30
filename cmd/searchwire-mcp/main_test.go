@@ -588,7 +588,7 @@ func TestFetchTokenNeverInOutput(t *testing.T) {
 }
 
 func TestFetchPopulatesEmbeddedLLMsTxt(t *testing.T) {
-	// The previous searchwire_llms_txt tool was merged into searchwire_fetch:
+	// The previous llms.txt tool was merged into the fetch tool:
 	// when the source is HTML (2xx) and a covering llms.txt exists, the
 	// parsed file is embedded in fetchOutput.llmsTxt so agents do not need
 	// a second round-trip. The probe is best-effort: any failure (404,
@@ -672,7 +672,7 @@ func TestFetchSkipsLLMsTxtWhenSourceNotHTML(t *testing.T) {
 
 func TestFetchSkipsLLMsTxtOnSourceHTTPError(t *testing.T) {
 	// 4xx/5xx source responses skip the llms.txt probe entirely: the
-	// searchwire_fetch tool surfaces the source error and the embedded
+	// fetch tool surfaces the source error and the embedded
 	// llmsTxt field is left nil. No extra round-trip is made.
 	client := &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
 		return &http.Response{
@@ -823,14 +823,40 @@ func TestConfigFromEnvReadsTempDir(t *testing.T) {
 }
 
 func TestSearchwireLLMsTxtToolRemoved(t *testing.T) {
-	// The standalone searchwire_llms_txt tool was intentionally removed
-	// from the MCP surface: llms.txt probing is now an automatic side
-	// effect of searchwire_fetch on 2xx HTML responses. Agents read the
-	// embedded llmsTxt field instead of calling a separate tool.
+	// The standalone llms.txt tool was intentionally removed from the MCP
+	// surface: llms.txt probing is now an automatic side effect of the
+	// fetch tool on 2xx HTML responses. Agents read the embedded llmsTxt
+	// field instead of calling a separate tool.
 	server := newServer(searchwire.Config{HTTPClient: fixtureClient(t)}, 0)
 	for _, name := range listToolNames(t, server) {
 		if name == "searchwire_llms_txt" {
 			t.Fatalf("searchwire_llms_txt must not be registered; tools = %v", listToolNames(t, server))
 		}
+	}
+}
+
+func TestToolNamesDropSearchwirePrefix(t *testing.T) {
+	// Tool names drop the "searchwire_" prefix because the MCP server
+	// name already carries it. Address tools as "<server>.<tool>"
+	// (e.g. "searchwire.search") so a prefixed tool name would be
+	// doubly redundant ("searchwire.searchwire_search"). This is a
+	// regression guard: renaming back to prefixed names would break
+	// every client that adopted the unprefixed convention.
+	tools := listToolNames(t, newServer(searchwire.Config{HTTPClient: fixtureClient(t)}, 0))
+	want := map[string]bool{
+		"search": false,
+		"fetch":  false,
+		"answer": false, // absent without a key, registered with one
+	}
+	for _, name := range tools {
+		if _, ok := want[name]; ok {
+			want[name] = true
+		}
+		if strings.HasPrefix(name, "searchwire_") {
+			t.Fatalf("tool %q still carries the searchwire_ prefix; tools = %v", name, tools)
+		}
+	}
+	if !want["search"] || !want["fetch"] {
+		t.Fatalf("expected search + fetch to be registered; tools = %v, want map = %v", tools, want)
 	}
 }

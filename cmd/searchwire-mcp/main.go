@@ -19,11 +19,17 @@ import (
 )
 
 const (
-	serverName          = "searchwire"
-	fallbackVersion     = "0.1.0"
-	searchToolName      = "searchwire_search"
-	fetchToolName       = "searchwire_fetch"
-	answerToolName      = "searchwire_answer"
+	serverName      = "searchwire"
+	fallbackVersion = "0.1.0"
+	// Tool names drop the "searchwire_" prefix because the MCP server
+	// name already carries it. Clients address tools as
+	// "<server-name>.<tool>" (e.g. "searchwire.search"), so a prefixed
+	// tool name would be doubly redundant: "searchwire.searchwire_search".
+	// Library-level naming (Searcher.Search / Searcher.Fetch /
+	// Searcher.Answer) is unaffected.
+	searchToolName      = "search"
+	fetchToolName       = "fetch"
+	answerToolName      = "answer"
 	maxErrorLen         = 240
 	envLimit            = "SEARCHWIRE_LIMIT"
 	envTimeout          = "SEARCHWIRE_TIMEOUT"
@@ -39,9 +45,9 @@ const (
 	searchDescription   = "Metasearch the open web across Brave, Startpage, Wikipedia, and GitHub. " +
 		"Returns ranked results with partial failure reporting when some sources fail. " +
 		"May take up to ~10s (or SEARCHWIRE_TIMEOUT) because sources are queried concurrently. " +
-		"After searching, use searchwire_fetch on promising URLs for full page text."
+		"After searching, use fetch on promising URLs for full page text."
 	fetchDescription = "Fetch one http(s) URL and return readable text (HTML stripped to title + visible text, " +
-		"or plain text as-is). Prefer searchwire_search first, then fetch promising result URLs. " +
+		"or plain text as-is). Prefer search first, then fetch promising result URLs. " +
 		"Not a full browser: no JavaScript rendering. max_bytes caps the length of the returned " +
 		"readable text (not the raw HTML download); over-limit text is truncated with truncated=true " +
 		"and the full text is also written to a file under SEARCHWIRE_TEMP_DIR (default $TMPDIR/searchwire) " +
@@ -84,7 +90,7 @@ type fetchOutput struct {
 	MarkdownAlt string            `json:"markdownAlt,omitempty"`
 	// LLMsTxt is the parsed llms.txt covering this page when the source
 	// fetch was HTML (2xx) and a covering file was retrievable. The
-	// llms.txt tool was merged into searchwire_fetch so agents do not
+	// llms.txt tool was merged into fetch so agents do not
 	// have to make a second call. Empty when the source is not HTML, the
 	// fetch failed, or no covering file exists.
 	LLMsTxt *llmsTxtOutput `json:"llmsTxt,omitempty"`
@@ -99,7 +105,7 @@ type fetchOutput struct {
 
 // llmsTxtOutput is the embedded llms.txt projection inside fetchOutput. It
 // is intentionally flat (matches the previous standalone tool's JSON shape)
-// so existing consumers that read llms.txt via searchwire_fetch.llmsTxt
+// so existing consumers that read llms.txt via fetch.llmsTxt
 // get the same fields they would have gotten from the deleted standalone
 // tool.
 type llmsTxtOutput struct {
@@ -399,7 +405,7 @@ func sanitizeFetchErr(err error) error {
 		errors.Is(err, searchwire.ErrUnexpectedContentType):
 		// ErrLLMsTxtNotFound / ErrInvalidLLMsTxt are intentionally absent
 		// here: llms.txt probing is now a best-effort side effect of
-		// searchwire_fetch, and a missing/invalid file is not surfaced
+		// the fetch tool, and a missing/invalid file is not surfaced
 		// as a tool error. Callers read result.LLMsTxt (nil) instead.
 		return err
 	}

@@ -135,7 +135,7 @@ for _, section := range llms.LLMsTxt.Sections {
 }
 ```
 
-> **MCP tool note.** The previous standalone `searchwire_llms_txt` MCP tool was merged into `searchwire_fetch`: agents now read the embedded `llmsTxt` field on the fetch result instead of making a second call. `Searcher.FetchLLMsTxt` is unchanged for library users.
+> **MCP tool note.** The previous standalone `llms.txt` MCP tool was merged into `fetch`: agents now read the embedded `llmsTxt` field on the fetch result instead of making a second call. `Searcher.FetchLLMsTxt` is unchanged for library users. Tool names drop the `searchwire_` prefix because the MCP server name already carries it — clients address tools as `<server>.<tool>` (e.g. `searchwire.fetch`), so a prefixed name would be doubly redundant.
 
 ### Search
 
@@ -212,13 +212,15 @@ searchwire-mcp
 
 | Name | Input | Output |
 |------|-------|--------|
-| `searchwire_search` | `{ "query": string, "limit"?: number }` | Searchwire response JSON (`query`, `results`, `errors`) |
-| `searchwire_fetch` | `{ "url": string, "max_bytes"?: number }` | Page JSON (`url`, `finalUrl`, `statusCode`, `contentType`, `title`, `text`, `links`, `headers`, `redirects`, `truncated`, `bytes`, `describedBy`, `markdownAlt`, `llmsTxt?`, `tempFile?`) |
-| `searchwire_answer` | `{ "question": string, "provider"?: string }` | Web-grounded answer JSON (`question`, `answer`, `provider`); registered only when an answer-provider key is available |
+| `search` | `{ "query": string, "limit"?: number }` | Searchwire response JSON (`query`, `results`, `errors`) |
+| `fetch` | `{ "url": string, "max_bytes"?: number }` | Page JSON (`url`, `finalUrl`, `statusCode`, `contentType`, `title`, `text`, `links`, `headers`, `redirects`, `truncated`, `bytes`, `describedBy`, `markdownAlt`, `llmsTxt?`, `tempFile?`) |
+| `answer` | `{ "question": string, "provider"?: string }` | Web-grounded answer JSON (`question`, `answer`, `provider`); registered only when an answer-provider key is available |
 
-Recommended agent workflow: **`searchwire_search` → pick URLs → `searchwire_fetch`**. Snippets alone are incomplete; fetch promising hits for full content. When the fetched page is HTML and the site publishes a covering `llms.txt`, the parsed file is embedded in `searchwire_fetch`'s `llmsTxt` field so the agent can follow LLM-friendly documentation without a second call. When the response is truncated, the full text is also written to a file under `SEARCHWIRE_TEMP_DIR` (default `$TMPDIR/searchwire`) and surfaced as `tempFile` — the agent can read the rest with `file_read` instead of refetching.
+Tool names drop the `searchwire_` prefix because the MCP server name already carries it. Clients address tools as `<server-name>.<tool>` (e.g. `searchwire.search`); a prefixed tool name would be doubly redundant (`searchwire.searchwire_search`). The same applies if you mount this server under a different MCP client with its own namespace.
 
-`searchwire_answer` is capability-driven: it is absent from MCP tool discovery
+Recommended agent workflow: **`search` → pick URLs → `fetch`**. Snippets alone are incomplete; fetch promising hits for full content. When the fetched page is HTML and the site publishes a covering `llms.txt`, the parsed file is embedded in `fetch`'s `llmsTxt` field so the agent can follow LLM-friendly documentation without a second call. When the response is truncated, the full text is also written to a file under `SEARCHWIRE_TEMP_DIR` (default `$TMPDIR/searchwire`) and surfaced as `tempFile` — the agent can read the rest with `file_read` instead of refetching.
+
+`answer` is capability-driven: it is absent from MCP tool discovery
 when none of `BRAVE_SEARCH_API_KEY`, `OPENROUTER_API_KEY`, `OPENAI_API_KEY`,
 `PERPLEXITY_API_KEY`, `ANTHROPIC_API_KEY`, or `XAI_API_KEY` is available.
 Restart the MCP process after adding or removing a key so clients receive the
@@ -256,7 +258,7 @@ configuration or its model env var.
 | `SEARCHWIRE_LIMIT` | adapter | Default result limit (int; unset = library default) |
 | `SEARCHWIRE_TIMEOUT` | adapter | HTTP client timeout as a Go duration string (e.g. `10s`; unset = library default) |
 | `SEARCHWIRE_MAX_BYTES` | adapter | Default fetch/response byte budget (unset = library default) |
-| `SEARCHWIRE_TEMP_DIR` | adapter | Directory used to materialize truncated fetch artifacts (default `$TMPDIR/searchwire`). The full extracted text is written here when `searchwire_fetch` truncates, and surfaced to the agent as the `tempFile` field so it can read the rest with `file_read` (or framework equivalents). |
+| `SEARCHWIRE_TEMP_DIR` | adapter | Directory used to materialize truncated fetch artifacts (default `$TMPDIR/searchwire`). The full extracted text is written here when `fetch` truncates, and surfaced to the agent as the `tempFile` field so it can read the rest with `file_read` (or framework equivalents). |
 
 Latency: search fans out across 4 sources and may take up to the configured timeout (default 10s). Clients should set appropriate tool timeouts.
 
