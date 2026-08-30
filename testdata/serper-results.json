@@ -1,0 +1,7 @@
+{
+  "organic": [
+    {"title": "Go Programming Language", "link": "https://go.dev/", "snippet": "The Go programming language."},
+    {"title": "Effective Go", "link": "https://go.dev/doc/effective_go", "snippet": "Tips for writing clear, idiomatic Go."},
+    {"title": "A Tour of Go", "link": "https://go.dev/tour/", "snippet": "An introduction to Go."}
+  ]
+}

@@ -21,7 +21,7 @@ func hasClassToken(classValue, token string) bool {
 			return true
 		}
 	}
-	return strings.Contains(classValue, token)
+	return false
 }
 
 func textContent(node *html.Node) string {

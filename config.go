@@ -21,6 +21,8 @@ type Config struct {
 	Timeout             time.Duration
 
 	Brave  BraveConfig
+	Serper SerperConfig
+	Tavily TavilyConfig
 	GitHub GitHubConfig
 	// OpenRouter and OpenAI are optional answer providers. They do not add
 	// metasearch sources; a resolved API key enables the answer capability.
@@ -46,6 +48,34 @@ type BraveConfig struct {
 	APIKey string
 	// APIKeyEnv names the environment variable for APIKey
 	// (default BRAVE_SEARCH_API_KEY).
+	APIKeyEnv string
+}
+
+// SerperConfig controls the optional Serper.dev (Google Search API) source.
+// Unlike Brave, Serper has no HTML fallback, so the source is only registered
+// when an API key resolves and Enabled is not explicitly false (default false).
+type SerperConfig struct {
+	// Enabled registers the Serper source. Default false.
+	Enabled *bool
+
+	// APIKey is sent as X-API-KEY. When empty, APIKeyEnv is read.
+	APIKey string
+	// APIKeyEnv names the environment variable for APIKey
+	// (default SERPER_API_KEY).
+	APIKeyEnv string
+}
+
+// TavilyConfig controls the optional Tavily (AI search) source. The source is
+// only registered when an API key resolves and Enabled is not explicitly false
+// (default false).
+type TavilyConfig struct {
+	// Enabled registers the Tavily source. Default false.
+	Enabled *bool
+
+	// APIKey is sent as Bearer auth. When empty, APIKeyEnv is read.
+	APIKey string
+	// APIKeyEnv names the environment variable for APIKey
+	// (default TAVILY_API_KEY).
 	APIKeyEnv string
 }
 
@@ -193,6 +223,16 @@ type braveSettings struct {
 	apiKey  string
 }
 
+type serperSettings struct {
+	enabled bool
+	apiKey  string
+}
+
+type tavilySettings struct {
+	enabled bool
+	apiKey  string
+}
+
 type llmAnswerSettings struct {
 	apiKey string
 	model  string
@@ -213,6 +253,38 @@ func (b BraveConfig) resolved() braveSettings {
 		env := strings.TrimSpace(b.APIKeyEnv)
 		if env == "" {
 			env = "BRAVE_SEARCH_API_KEY"
+		}
+		settings.apiKey = strings.TrimSpace(os.Getenv(env))
+	}
+	return settings
+}
+
+func (s SerperConfig) resolved() serperSettings {
+	settings := serperSettings{enabled: false}
+	if s.Enabled != nil {
+		settings.enabled = *s.Enabled
+	}
+	settings.apiKey = strings.TrimSpace(s.APIKey)
+	if settings.apiKey == "" {
+		env := strings.TrimSpace(s.APIKeyEnv)
+		if env == "" {
+			env = "SERPER_API_KEY"
+		}
+		settings.apiKey = strings.TrimSpace(os.Getenv(env))
+	}
+	return settings
+}
+
+func (t TavilyConfig) resolved() tavilySettings {
+	settings := tavilySettings{enabled: false}
+	if t.Enabled != nil {
+		settings.enabled = *t.Enabled
+	}
+	settings.apiKey = strings.TrimSpace(t.APIKey)
+	if settings.apiKey == "" {
+		env := strings.TrimSpace(t.APIKeyEnv)
+		if env == "" {
+			env = "TAVILY_API_KEY"
 		}
 		settings.apiKey = strings.TrimSpace(os.Getenv(env))
 	}
@@ -317,6 +389,12 @@ func sourcesFromConfig(cfg Config) []source {
 	sources := make([]source, 0, 4)
 	if settings := cfg.Brave.resolved(); settings.enabled {
 		sources = append(sources, braveSource{apiKey: settings.apiKey})
+	}
+	if settings := cfg.Serper.resolved(); settings.enabled && settings.apiKey != "" {
+		sources = append(sources, serperSource{apiKey: settings.apiKey})
+	}
+	if settings := cfg.Tavily.resolved(); settings.enabled && settings.apiKey != "" {
+		sources = append(sources, tavilySource{apiKey: settings.apiKey})
 	}
 	sources = append(sources,
 		startpageSource{},

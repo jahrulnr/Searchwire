@@ -1,7 +1,9 @@
 // Package searchwire is a zero-configuration Go metasearch and page-fetch
 // runtime for agent tooling. Callers provide a search query and optional Config;
 // built-in sources fan out concurrently, partial failures are reported in the
-// response, and results are deduplicated and ranked. Searcher.Fetch retrieves
+// response, and results are deduplicated and ranked. Built-in sources include
+// Brave Search, Startpage, Wikipedia, GitHub, and the opt-in Serper.dev and
+// Tavily API sources (registered only when their API keys resolve). Searcher.Fetch retrieves
 // one http(s) URL as readable text, with per-call controls for byte budget,
 // conditional GET, and Range requests; it also surfaces llmstxt.org v2
 // discovery hints (the covering llms.txt file and markdown alternates) when a

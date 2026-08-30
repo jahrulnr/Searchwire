@@ -80,11 +80,7 @@ func (f *fetcher) do(ctx context.Context, method, rawURL, accept, contentType st
 		return nil, ErrResponseTooLarge
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return nil, &HTTPError{
-			StatusCode: resp.StatusCode,
-			Status:     resp.Status,
-			Body:       strings.TrimSpace(string(body)),
-		}
+		return nil, newHTTPError(resp, body)
 	}
 	if err := validateContentType(resp.Header.Get("Content-Type"), allowedTypes); err != nil {
 		return nil, err
@@ -118,11 +114,7 @@ func (f *fetcher) getGitHub(ctx context.Context, rawURL, token string) ([]byte, 
 		return nil, ErrResponseTooLarge
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return nil, &HTTPError{
-			StatusCode: resp.StatusCode,
-			Status:     resp.Status,
-			Body:       strings.TrimSpace(string(body)),
-		}
+		return nil, newHTTPError(resp, body)
 	}
 	if err := validateContentType(resp.Header.Get("Content-Type"), []string{"application/json"}); err != nil {
 		return nil, err

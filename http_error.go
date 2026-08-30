@@ -47,9 +47,10 @@ func parseRetryAfter(value string) (int, error) {
 //   - {"detail": "..."}
 //   - {"errors": [ ... ]}
 //
-// Returns the parsed top-level map (with nested values intact) so the agent
+// Returns the parsed top-level map (with nested values intact) so the caller
 // can read whichever field the server used. Returns nil if the body is not
-// valid JSON or not an object.
+// valid JSON; for a valid JSON object without a recognized error key, the
+// map is still returned (caller decides whether it represents an error).
 func parseJSONErrorEnvelope(body []byte) map[string]any {
 	var v map[string]any
 	if err := json.Unmarshal(body, &v); err != nil {

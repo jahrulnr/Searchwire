@@ -1,0 +1,7 @@
+{
+  "results": [
+    {"title": "Go Programming Language", "url": "https://go.dev/", "content": "The Go programming language."},
+    {"title": "Effective Go", "url": "https://go.dev/doc/effective_go", "content": "Tips for writing clear, idiomatic Go."},
+    {"title": "A Tour of Go", "url": "https://go.dev/tour/", "content": "An introduction to Go."}
+  ]
+}

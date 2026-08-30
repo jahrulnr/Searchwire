@@ -233,6 +233,8 @@ configuration or its model env var.
 | `XAI_API_KEY` | library | Optional xAI key; enables the `xai` answer provider |
 | `XAI_MODEL` | library | xAI answer model (default `grok-4.5`) |
 | `GITHUB_TOKEN` | library | Optional GitHub API token (higher rate limits) |
+| `SERPER_API_KEY` | library | Optional Serper.dev API key; enables the Serper.dev source |
+| `TAVILY_API_KEY` | library | Optional Tavily API key; enables the Tavily source |
 | `SEARCHWIRE_LIMIT` | adapter | Default result limit (int; unset = library default) |
 | `SEARCHWIRE_TIMEOUT` | adapter | HTTP client timeout as a Go duration string (e.g. `10s`; unset = library default) |
 | `SEARCHWIRE_MAX_BYTES` | adapter | Default fetch/response byte budget (unset = library default) |
@@ -263,6 +265,8 @@ Searchwire fans out concurrently to:
 2. Startpage (HTML)
 3. Wikipedia MediaWiki API (JSON)
 4. GitHub Search API (repositories + issues; falls back to repositories when issues search fails)
+5. Serper.dev (Google Search API; requires SERPER_API_KEY)
+6. Tavily (AI search; requires TAVILY_API_KEY)
 
 Source ordering is also the tie-break order when fused scores are equal.
 
@@ -301,6 +305,12 @@ searcher := searchwire.New(searchwire.Config{
 	},
 	GitHub: searchwire.GitHubConfig{
 		Token: "ghp_...", // or read GITHUB_TOKEN
+	},
+	Serper: searchwire.SerperConfig{
+		APIKey: "...", // or read SERPER_API_KEY
+	},
+	Tavily: searchwire.TavilyConfig{
+		APIKey: "...", // or read TAVILY_API_KEY
 	},
 })
 ```
@@ -350,6 +360,30 @@ more important than automatic routing.
 | `SearchIssues` | `true` | Repo+issues (B); `false` = repos only (A) |
 
 When `SearchIssues` is true and issues search fails, repository results are still returned.
+
+### Serper.dev
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `Enabled` | `false` | Register the Serper source |
+| `APIKey` | — | Serper.dev API key; overrides env |
+| `APIKeyEnv` | `SERPER_API_KEY` | Env var for the key |
+
+Serper.dev exposes a [Google Search API](https://serper.dev) that returns organic
+results as JSON. The source is opt-in: it is only registered when a key resolves
+and `Enabled` is not explicitly false. There is no HTML fallback.
+
+### Tavily
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `Enabled` | `false` | Register the Tavily source |
+| `APIKey` | — | Tavily API key; overrides env |
+| `APIKeyEnv` | `TAVILY_API_KEY` | Env var for the key |
+
+Tavily is an [AI search API](https://tavily.com) that returns ranked results with
+content snippets. The source is opt-in: it is only registered when a key resolves
+and `Enabled` is not explicitly false. There is no HTML fallback.
 
 ### Future development
 
