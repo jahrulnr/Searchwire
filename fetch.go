@@ -195,6 +195,10 @@ func (s *Searcher) FetchWithOptions(ctx context.Context, rawURL string, opts Fet
 	// budget to the extracted text. This keeps small budgets useful: a 5 KB
 	// budget now yields 5 KB of real content instead of a fragment of <head>.
 	title, text, links, hints := extractFetchText(mediaType, body)
+	// Runs of 3+ newlines are blank-line spam from whitespace text nodes and
+	// pretty-printed bodies, not structure; collapse before the budget so
+	// max_bytes measures real content.
+	text = collapseNewlines(text)
 	text, truncated := truncateRunes(text, textLimit)
 	if truncated {
 		// Reserve space for the marker within the budget so the total text

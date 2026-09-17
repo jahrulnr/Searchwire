@@ -159,6 +159,64 @@ func TestFetchWithLimitOverride(t *testing.T) {
 	}
 }
 
+func TestFetchCollapsesBlankLineRuns(t *testing.T) {
+	// Whitespace text nodes between block elements reach the extracted text
+	// as runs of blank lines. Collapse them to a single empty line so the
+	// result does not waste tokens on newline spam.
+	body := "<!doctype html><html><head><title>Blanky</title></head><body>" +
+		"<p>First</p>\n\n\n\n\n<p>Second</p>\n\n\n<p>Third</p></body></html>"
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		switch r.URL.String() {
+		case "https://example.com/page":
+			return &http.Response{
+				StatusCode: 200,
+				Status:     "200 OK",
+				Header:     http.Header{"Content-Type": []string{"text/html"}},
+				Body:       io.NopCloser(strings.NewReader(body)),
+				Request:    r,
+			}, nil
+		default:
+			return &http.Response{
+				StatusCode: 404, Status: "404 Not Found",
+				Header:  http.Header{"Content-Type": []string{"text/plain"}},
+				Body:    io.NopCloser(strings.NewReader("missing")),
+				Request: r,
+			}, nil
+		}
+	})}
+	result, err := New(Config{HTTPClient: client}).Fetch(context.Background(), "https://example.com/page")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(result.Text, "\n\n\n") {
+		t.Fatalf("blank-line run survived: %q", result.Text)
+	}
+	for _, want := range []string{"First", "Second", "Third"} {
+		if !strings.Contains(result.Text, want) {
+			t.Fatalf("text lost %q: %q", want, result.Text)
+		}
+	}
+}
+
+func TestFetchCollapsesBlankLineRunsPlainText(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: 200,
+			Status:     "200 OK",
+			Header:     http.Header{"Content-Type": []string{"text/plain"}},
+			Body:       io.NopCloser(strings.NewReader("a\n\n\n\nb")),
+			Request:    r,
+		}, nil
+	})}
+	result, err := New(Config{HTTPClient: client}).Fetch(context.Background(), "https://example.com/raw.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Text != "a\n\nb" {
+		t.Fatalf("text = %q", result.Text)
+	}
+}
+
 func TestFetchNilSearcher(t *testing.T) {
 	var s *Searcher
 	_, err := s.Fetch(context.Background(), "https://example.com")
