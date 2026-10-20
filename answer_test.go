@@ -595,6 +595,28 @@ func TestOpenCodeAnswerUsesZenResponsesWebSearchTool(t *testing.T) {
 	}
 }
 
+func TestOpenCodeAnswerHonorsGoLaneBaseURL(t *testing.T) {
+	clearAnswerProviderKeys(t)
+	t.Setenv("OPENCODE2_API_KEY", "opencode2_env_key")
+	t.Setenv("OPENCODE_BASE_URL", "https://opencode.ai/zen/go/v1")
+	var sawURL string
+	client := &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		sawURL = r.URL.String()
+		return answerJSONResponse(`{"output":[{"type":"web_search_call"},{"type":"message","content":[{"type":"output_text","text":"go answer"}]}]}`), nil
+	})}
+	searcher := New(Config{HTTPClient: client})
+	answer, err := searcher.AnswerWithOptions(context.Background(), "q", AnswerOptions{Provider: "opencode"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sawURL != "https://opencode.ai/zen/go/v1/responses" {
+		t.Fatalf("request url = %s", sawURL)
+	}
+	if answer.Text != "go answer" {
+		t.Fatalf("answer = %#v", answer)
+	}
+}
+
 func TestOpenCodeAnswerReadsSecondaryEnvKey(t *testing.T) {
 	clearAnswerProviderKeys(t)
 	t.Setenv("OPENCODE2_API_KEY", "opencode2_env_key")

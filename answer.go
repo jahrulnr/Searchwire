@@ -123,7 +123,7 @@ func answerProvidersFromConfig(cfg Config) []answerProvider {
 		providers = append(providers, omniRouteAnswerProvider{apiKey: settings.apiKey, baseURL: settings.baseURL, provider: settings.provider})
 	}
 	if settings := cfg.OpenCode.resolved(); settings.apiKey != "" {
-		providers = append(providers, openCodeAnswerProvider{apiKey: settings.apiKey, model: settings.model})
+		providers = append(providers, openCodeAnswerProvider{apiKey: settings.apiKey, model: settings.model, baseURL: settings.baseURL})
 	}
 	return providers
 }

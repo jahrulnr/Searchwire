@@ -169,6 +169,12 @@ type OmniRouteConfig struct {
 	ProviderEnv string
 }
 
+type openCodeSettings struct {
+	apiKey  string
+	model   string
+	baseURL string
+}
+
 // OpenCodeConfig controls web-grounded answers through the OpenCode Zen
 // Responses API gateway.
 type OpenCodeConfig struct {
@@ -183,6 +189,11 @@ type OpenCodeConfig struct {
 	// cost-focused gpt-5.6-luna model.
 	Model    string
 	ModelEnv string
+	// BaseURL overrides BaseURLEnv (default OPENCODE_BASE_URL), then falls back
+	// to the Zen paid lane. The free Go lane lives under /zen/go/v1 — set
+	// BaseURL to https://opencode.ai/zen/go/v1 for OpenCode Go plans.
+	BaseURL    string
+	BaseURLEnv string
 }
 
 // XAIConfig controls web-grounded answers through the xAI Responses API.
@@ -436,18 +447,33 @@ func (c OmniRouteConfig) resolved() omniRouteSettings {
 	return omniRouteSettings{apiKey: apiKey, baseURL: baseURL, provider: provider}
 }
 
-func (c OpenCodeConfig) resolved() llmAnswerSettings {
+func (c OpenCodeConfig) resolved() openCodeSettings {
 	if c.Enabled != nil && !*c.Enabled {
-		return llmAnswerSettings{}
+		return openCodeSettings{}
 	}
 	settings := resolveLLMAnswerSettings(
 		c.APIKey, c.APIKeyEnv, "OPENCODE_API_KEY",
 		c.Model, c.ModelEnv, "OPENCODE_MODEL", "gpt-5.6-luna",
 	)
-	if settings.apiKey == "" && c.APIKey == "" && c.APIKeyEnv == "" {
-		settings.apiKey = strings.TrimSpace(os.Getenv("OPENCODE2_API_KEY"))
+	apiKey := settings.apiKey
+	if apiKey == "" && c.APIKey == "" && c.APIKeyEnv == "" {
+		apiKey = strings.TrimSpace(os.Getenv("OPENCODE2_API_KEY"))
 	}
-	return settings
+	if apiKey == "" {
+		return openCodeSettings{}
+	}
+	baseURL := strings.TrimSpace(c.BaseURL)
+	if baseURL == "" {
+		env := c.BaseURLEnv
+		if env == "" {
+			env = "OPENCODE_BASE_URL"
+		}
+		baseURL = strings.TrimSpace(os.Getenv(env))
+	}
+	if baseURL == "" {
+		baseURL = openCodeDefaultBaseURL
+	}
+	return openCodeSettings{apiKey: apiKey, model: settings.model, baseURL: baseURL}
 }
 
 func resolveLLMAnswerSettings(apiKey, apiKeyEnv, defaultAPIKeyEnv, model, modelEnv, defaultModelEnv, defaultModel string) llmAnswerSettings {

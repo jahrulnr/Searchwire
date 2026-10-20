@@ -8,11 +8,14 @@ import (
 	"strings"
 )
 
-const openCodeResponsesEndpoint = "https://opencode.ai/zen/v1/responses"
+// openCodeDefaultBaseURL is the OpenCode Zen paid lane; the free Go lane is
+// https://opencode.ai/zen/go/v1 — both expose the same Responses API.
+const openCodeDefaultBaseURL = "https://opencode.ai/zen/v1"
 
 type openCodeAnswerProvider struct {
-	apiKey string
-	model  string
+	apiKey  string
+	model   string
+	baseURL string
 }
 
 func (openCodeAnswerProvider) name() string { return AnswerProviderOpenCode }
@@ -38,7 +41,7 @@ func (p openCodeAnswerProvider) answer(ctx context.Context, f *fetcher, question
 	}
 
 	headers := http.Header{"Authorization": []string{"Bearer " + p.apiKey}}
-	body, err := f.postJSON(ctx, openCodeResponsesEndpoint, payload, headers)
+	body, err := f.postJSON(ctx, strings.TrimRight(p.baseURL, "/")+"/responses", payload, headers)
 	if err != nil {
 		return "", redactErrorSecret(err, p.apiKey)
 	}
