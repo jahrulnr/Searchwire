@@ -199,7 +199,8 @@ func (s *Searcher) FetchWithOptions(ctx context.Context, rawURL string, opts Fet
 	// pretty-printed bodies, not structure; collapse before the budget so
 	// max_bytes measures real content.
 	text = collapseNewlines(text)
-	text, truncated := truncateRunes(text, textLimit)
+	fullText := text
+	text, truncated := truncateRunes(fullText, textLimit)
 	if truncated {
 		// Reserve space for the marker within the budget so the total text
 		// length stays at textLimit. Skip the marker when the budget is too
@@ -235,11 +236,11 @@ func (s *Searcher) FetchWithOptions(ctx context.Context, rawURL string, opts Fet
 		LLMsTxtURL: llms.url,
 	}
 	if truncated {
-		// Materialize the full extracted text to a temp file so the agent can
-		// read beyond the inline Text with file_read (or framework-specific
-		// read tools). Failures here are non-fatal: the truncated Text is
-		// still returned inline with the [truncated] marker.
-		if path, err := s.writeTempArtifact(finalURL, text); err == nil {
+		// Materialize the full extracted text (pre-truncation) to a temp
+		// file so the agent can read beyond the inline Text with its file
+		// tools. Failures here are non-fatal: the truncated Text is still
+		// returned inline with the [truncated] marker.
+		if path, err := s.writeTempArtifact(finalURL, fullText); err == nil {
 			result.TempFile = path
 		}
 	}
@@ -378,7 +379,7 @@ func validateFetchContentType(mediaType string) error {
 	if isFetchAllowedMediaType(mediaType) {
 		return nil
 	}
-	return fmt.Errorf("%w: %q", ErrUnexpectedContentType, mediaType)
+	return fmt.Errorf("%w: %q — fetch supports text/*, HTML, JSON, XML, and Markdown; binary types (PDF, images, archives) need a local reader", ErrUnexpectedContentType, mediaType)
 }
 
 func extractFetchText(mediaType string, body []byte) (title, text string, links []Link, hints htmlPageHints) {

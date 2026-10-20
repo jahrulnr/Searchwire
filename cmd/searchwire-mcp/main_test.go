@@ -970,15 +970,14 @@ func TestFetchWritesTempFileWhenTruncated(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(contents) != out.Text {
-		t.Fatalf("temp file content mismatch: %q vs %q", string(contents), out.Text)
+	// The temp file holds the FULL extracted text so the agent can read
+	// beyond the inline budget — not the truncated Text that carries the
+	// [truncated] marker.
+	if string(contents) == out.Text {
+		t.Fatalf("temp file must not mirror truncated inline text: %q", contents)
 	}
-	// The temp file mirrors the truncated Text (which already carries the
-	// [truncated] marker), so its size is the post-truncation budget, not
-	// the full original body. Assert the file is non-empty and matches
-	// what was returned inline.
-	if len(contents) == 0 {
-		t.Fatal("expected non-empty temp file")
+	if len(contents) <= len(out.Text) {
+		t.Fatalf("temp file (%d bytes) should exceed inline text (%d bytes)", len(contents), len(out.Text))
 	}
 }
 

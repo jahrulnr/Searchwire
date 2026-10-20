@@ -3,6 +3,8 @@ package searchwire
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -171,6 +173,80 @@ func TestAnswerToolRunDecodesArgsAndReturnsJSON(t *testing.T) {
 	}
 	if out.Answer != "grounded" || out.Provider != "brave" {
 		t.Fatalf("out = %#v", out)
+	}
+}
+
+func TestFetchToolBoundsPageLinksAndLLMsTxt(t *testing.T) {
+	var page strings.Builder
+	page.WriteString("<html><body><p>hi</p>")
+	for i := 0; i < toolFetchMaxLinks+10; i++ {
+		fmt.Fprintf(&page, `<a href="https://example.com/p%d">link %d</a>`, i, i)
+	}
+	page.WriteString("</body></html>")
+	var llms strings.Builder
+	llms.WriteString("# Docs\n\n## Big\n")
+	for i := 0; i < toolFetchMaxLLMsTxtLinks+25; i++ {
+		fmt.Fprintf(&llms, "- [d%d](https://example.com/d%d)\n", i, i)
+	}
+	client := &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		if strings.HasSuffix(r.URL.Path, "/llms.txt") {
+			return okBody("text/plain", []byte(llms.String())), nil
+		}
+		return okBody("text/html", []byte(page.String())), nil
+	})}
+	defs := New(Config{HTTPClient: client}).Tools()
+	raw, err := findDef(t, defs, ToolFetch).Run(context.Background(), json.RawMessage(`{"url":"https://example.com/"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out struct {
+		Links        []json.RawMessage `json:"links"`
+		LinksOmitted int               `json:"linksOmitted"`
+		LLMsTxt      struct {
+			Sections []struct {
+				Links []json.RawMessage `json:"links"`
+			} `json:"sections"`
+			LinksOmitted int `json:"linksOmitted"`
+		} `json:"llmsTxt"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(out.Links) != toolFetchMaxLinks || out.LinksOmitted != 10 {
+		t.Fatalf("links = %d omitted = %d", len(out.Links), out.LinksOmitted)
+	}
+	total := 0
+	for _, sec := range out.LLMsTxt.Sections {
+		total += len(sec.Links)
+	}
+	if total != toolFetchMaxLLMsTxtLinks || out.LLMsTxt.LinksOmitted != 25 {
+		t.Fatalf("llmsTxt links = %d omitted = %d", total, out.LLMsTxt.LinksOmitted)
+	}
+}
+
+func TestFetchToolErrorBodyIsBounded(t *testing.T) {
+	client := &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusNotFound,
+			Status:     "404 Not Found",
+			Header:     http.Header{"Content-Type": []string{"text/html"}},
+			Body:       io.NopCloser(strings.NewReader(strings.Repeat("<p>not found</p>", 8000))),
+		}, nil
+	})}
+	defs := New(Config{HTTPClient: client}).Tools()
+	_, err := findDef(t, defs, ToolFetch).Run(context.Background(), json.RawMessage(`{"url":"https://example.com/"}`))
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) {
+		t.Fatalf("err type = %T", err)
+	}
+	if len(err.Error()) > toolErrorMaxLen*2 {
+		t.Fatalf("error text = %d chars — upstream body must be bounded", len(err.Error()))
+	}
+	if !strings.HasSuffix(httpErr.Body, "…") {
+		t.Fatalf("body = %q…", httpErr.Body[:80])
 	}
 }
 

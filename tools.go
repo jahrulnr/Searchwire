@@ -13,6 +13,15 @@ import (
 // document a tool caller receives.
 const toolErrorMaxLen = 240
 
+// toolFetchMaxLinks caps the page links echoed into the fetch document — a
+// navigation-heavy page can carry hundreds. LinksOmitted records the rest.
+const toolFetchMaxLinks = 50
+
+// toolFetchMaxLLMsTxtLinks caps links echoed across all llms.txt sections;
+// documentation indexes can carry hundreds of entries. Section names are
+// kept in full — only the link lists are bounded.
+const toolFetchMaxLLMsTxtLinks = 100
+
 // Tool names are stable identifiers shared by every consumer (the MCP server,
 // in-process tool registries, ...). Consumers that embed a different model
 // should filter ToolAnswer out when they do not want a second model answering
@@ -33,7 +42,7 @@ const (
 		"Not a full browser: no JavaScript rendering. max_bytes caps the length of the returned " +
 		"readable text (not the raw HTML download); over-limit text is truncated with truncated=true " +
 		"and the full text is also written to a file under the configured temp dir " +
-		"so the agent can read the rest with file_read. When the source is HTML and the site publishes " +
+		"so the agent can read the rest with its file-reading tool. When the source is HTML and the site publishes " +
 		"a covering llms.txt, the parsed file is returned inline (llmsTxt field) so the agent can jump " +
 		"directly to the LLM-friendly documentation."
 	answerToolDescription = "Answer one question using an optional web-grounded answer provider. " +
@@ -170,13 +179,16 @@ type toolFetchOutput struct {
 	Bytes       int               `json:"bytes"`
 	DescribedBy string            `json:"describedBy,omitempty"`
 	MarkdownAlt string            `json:"markdownAlt,omitempty"`
+	// LinksOmitted counts links dropped by toolFetchMaxLinks so the caller
+	// knows the page had more.
+	LinksOmitted int `json:"linksOmitted,omitempty"`
 	// LLMsTxt is the parsed llms.txt covering this page when the source
 	// fetch was HTML (2xx) and a covering file was retrievable. Empty when
 	// the source is not HTML, the fetch failed, or no covering file exists.
 	LLMsTxt *toolLLMsTxtOutput `json:"llmsTxt,omitempty"`
 	// TempFile holds the full extracted text when Truncated is true, so
-	// the agent can read the rest with file_read (or framework
-	// equivalents) without refetching. Empty when not truncated.
+	// the agent can read the rest with its file-reading tool without
+	// refetching. Empty when not truncated.
 	TempFile string `json:"tempFile,omitempty"`
 }
 
@@ -188,6 +200,9 @@ type toolLLMsTxtOutput struct {
 	Summary     string               `json:"summary,omitempty"`
 	Description string               `json:"description,omitempty"`
 	Sections    []toolLLMsTxtSection `json:"sections,omitempty"`
+	// LinksOmitted counts llms.txt links dropped by
+	// toolFetchMaxLLMsTxtLinks across all sections.
+	LinksOmitted int `json:"linksOmitted,omitempty"`
 }
 
 type toolLLMsTxtLink struct {
@@ -221,7 +236,6 @@ func (s *Searcher) runFetchTool(ctx context.Context, argsJSON json.RawMessage) (
 		ContentType: result.ContentType,
 		Title:       result.Title,
 		Text:        result.Text,
-		Links:       result.Links,
 		Headers:     result.Headers,
 		Redirects:   result.Redirects,
 		Truncated:   result.Truncated,
@@ -229,6 +243,12 @@ func (s *Searcher) runFetchTool(ctx context.Context, argsJSON json.RawMessage) (
 		DescribedBy: result.DescribedBy,
 		MarkdownAlt: result.MarkdownAlt,
 		TempFile:    result.TempFile,
+	}
+	if len(result.Links) > toolFetchMaxLinks {
+		out.Links = result.Links[:toolFetchMaxLinks]
+		out.LinksOmitted = len(result.Links) - toolFetchMaxLinks
+	} else {
+		out.Links = result.Links
 	}
 	if result.LLMsTxt != nil {
 		llms := toolLLMsTxtOutput{
@@ -239,10 +259,16 @@ func (s *Searcher) runFetchTool(ctx context.Context, argsJSON json.RawMessage) (
 			Summary:     result.LLMsTxt.Summary,
 			Description: result.LLMsTxt.Description,
 		}
+		remaining := toolFetchMaxLLMsTxtLinks
 		for _, sec := range result.LLMsTxt.Sections {
 			s := toolLLMsTxtSection{Name: sec.Name}
 			for _, l := range sec.Links {
-				s.Links = append(s.Links, toolLLMsTxtLink{Name: l.Name, URL: l.URL, Notes: l.Notes})
+				if remaining > 0 {
+					s.Links = append(s.Links, toolLLMsTxtLink{Name: l.Name, URL: l.URL, Notes: l.Notes})
+					remaining--
+				} else {
+					llms.LinksOmitted++
+				}
 			}
 			llms.Sections = append(llms.Sections, s)
 		}
@@ -263,13 +289,26 @@ type toolAnswerOutput struct {
 }
 
 // sanitizeToolError redacts every configured credential from an error while
-// preserving its type where redactErrorSecret can (HTTPError keeps fields).
+// preserving its type where redactErrorSecret can (HTTPError keeps fields),
+// then bounds the text the error will produce: an upstream error page can
+// run to tens of KB and would flood the caller's tool output.
 func (s *Searcher) sanitizeToolError(err error) error {
 	if err == nil {
 		return nil
 	}
 	for _, secret := range s.secrets {
 		err = redactErrorSecret(err, secret)
+	}
+	if httpErr, ok := err.(*HTTPError); ok {
+		if len(httpErr.Body) <= toolErrorMaxLen {
+			return err
+		}
+		bounded := *httpErr
+		bounded.Body = httpErr.Body[:toolErrorMaxLen] + "…"
+		return &bounded
+	}
+	if len(err.Error()) > toolErrorMaxLen {
+		return errors.New(s.sanitizeToolErrorText(err.Error()))
 	}
 	return err
 }

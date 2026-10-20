@@ -201,8 +201,14 @@ func TestFetchWritesTempFileWhenTruncated(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(body) != res.Text {
-		t.Fatalf("temp file body != inline text: %q vs %q", body, res.Text)
+	// The artifact holds the FULL extracted text — the contract that lets
+	// the agent read beyond the inline budget — not the truncated Text.
+	full := strings.Repeat("z", 100)
+	if string(body) != full {
+		t.Fatalf("temp file should hold the full text: got %d bytes, want %d", len(body), len(full))
+	}
+	if string(body) == res.Text {
+		t.Fatalf("temp file must not mirror the truncated inline text (%d bytes)", len(body))
 	}
 }
 
