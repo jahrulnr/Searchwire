@@ -102,6 +102,165 @@ func okJSON(body []byte) *http.Response {
 	}
 }
 
+// The tool contract (names, schemas, runners) lives in the library; these
+// types mirror its wire JSON so tests assert the contract, not internals.
+const (
+	searchToolName = searchwire.ToolSearch
+	fetchToolName  = searchwire.ToolFetch
+	answerToolName = searchwire.ToolAnswer
+)
+
+type searchInput struct {
+	Query string `json:"query"`
+	Limit *int   `json:"limit,omitempty"`
+}
+
+type searchOutput struct {
+	Query   string                   `json:"query"`
+	Results []searchwire.Result      `json:"results"`
+	Errors  []searchwire.SourceError `json:"errors,omitempty"`
+}
+
+type fetchInput struct {
+	URL      string `json:"url"`
+	MaxBytes *int64 `json:"max_bytes,omitempty"`
+}
+
+type fetchOutput struct {
+	URL         string            `json:"url"`
+	FinalURL    string            `json:"finalUrl,omitempty"`
+	StatusCode  int               `json:"statusCode"`
+	ContentType string            `json:"contentType,omitempty"`
+	Title       string            `json:"title,omitempty"`
+	Text        string            `json:"text"`
+	Links       []searchwire.Link `json:"links,omitempty"`
+	Headers     map[string]string `json:"headers,omitempty"`
+	Redirects   int               `json:"redirects,omitempty"`
+	Truncated   bool              `json:"truncated"`
+	Bytes       int               `json:"bytes"`
+	DescribedBy string            `json:"describedBy,omitempty"`
+	MarkdownAlt string            `json:"markdownAlt,omitempty"`
+	LLMsTxt     *llmsTxtOutput    `json:"llmsTxt,omitempty"`
+	TempFile    string            `json:"tempFile,omitempty"`
+}
+
+type llmsTxtOutput struct {
+	URL         string              `json:"url"`
+	FinalURL    string              `json:"finalUrl,omitempty"`
+	StatusCode  int                 `json:"statusCode"`
+	Title       string              `json:"title"`
+	Summary     string              `json:"summary,omitempty"`
+	Description string              `json:"description,omitempty"`
+	Sections    []llmsSectionOutput `json:"sections,omitempty"`
+}
+
+type llmsLinkOutput struct {
+	Name  string `json:"name"`
+	URL   string `json:"url"`
+	Notes string `json:"notes,omitempty"`
+}
+
+type llmsSectionOutput struct {
+	Name  string           `json:"name"`
+	Links []llmsLinkOutput `json:"links,omitempty"`
+}
+
+type answerInput struct {
+	Question string `json:"question"`
+	Provider string `json:"provider,omitempty"`
+}
+
+type answerOutput struct {
+	Question string `json:"question"`
+	Answer   string `json:"answer"`
+	Provider string `json:"provider"`
+}
+
+func findToolDef(cfg searchwire.Config, name string) (searchwire.ToolDef, bool) {
+	for _, def := range searchwire.New(cfg).Tools() {
+		if def.Name == name {
+			return def, true
+		}
+	}
+	return searchwire.ToolDef{}, false
+}
+
+func runTool(ctx context.Context, cfg searchwire.Config, name string, in, out any) error {
+	def, ok := findToolDef(cfg, name)
+	if !ok {
+		return errors.New("tool not registered: " + name)
+	}
+	args, err := json.Marshal(in)
+	if err != nil {
+		return err
+	}
+	raw, err := def.Run(ctx, args)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(raw, out)
+}
+
+func runSearch(ctx context.Context, cfg searchwire.Config, in searchInput) (searchOutput, error) {
+	var out searchOutput
+	err := runTool(ctx, cfg, searchToolName, in, &out)
+	return out, err
+}
+
+func runFetch(ctx context.Context, cfg searchwire.Config, _ int64, in fetchInput) (fetchOutput, error) {
+	var out fetchOutput
+	err := runTool(ctx, cfg, fetchToolName, in, &out)
+	return out, err
+}
+
+func runAnswer(ctx context.Context, cfg searchwire.Config, in answerInput) (answerOutput, error) {
+	var out answerOutput
+	err := runTool(ctx, cfg, answerToolName, in, &out)
+	return out, err
+}
+
+// makeToolHandler adapts a library ToolDef to the same triple the previous
+// typed MCP handlers returned, so tests keep asserting result + structured.
+func makeToolHandler[In, Out any](cfg searchwire.Config, name string) func(context.Context, *mcp.CallToolRequest, In) (*mcp.CallToolResult, Out, error) {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, input In) (*mcp.CallToolResult, Out, error) {
+		var out Out
+		def, ok := findToolDef(cfg, name)
+		if !ok {
+			return nil, out, errors.New("tool not registered: " + name)
+		}
+		args, err := json.Marshal(input)
+		if err != nil {
+			return nil, out, err
+		}
+		raw, runErr := def.Run(ctx, args)
+		if runErr != nil {
+			return &mcp.CallToolResult{
+				IsError: true,
+				Content: []mcp.Content{&mcp.TextContent{Text: sanitizeError(runErr.Error())}},
+			}, out, nil
+		}
+		if err := json.Unmarshal(raw, &out); err != nil {
+			return nil, out, err
+		}
+		return &mcp.CallToolResult{
+			Content:           []mcp.Content{&mcp.TextContent{Text: string(raw)}},
+			StructuredContent: raw,
+		}, out, nil
+	}
+}
+
+func makeSearchHandler(cfg searchwire.Config) func(context.Context, *mcp.CallToolRequest, searchInput) (*mcp.CallToolResult, searchOutput, error) {
+	return makeToolHandler[searchInput, searchOutput](cfg, searchToolName)
+}
+
+func makeFetchHandler(cfg searchwire.Config, _ int64) func(context.Context, *mcp.CallToolRequest, fetchInput) (*mcp.CallToolResult, fetchOutput, error) {
+	return makeToolHandler[fetchInput, fetchOutput](cfg, fetchToolName)
+}
+
+func makeAnswerHandler(cfg searchwire.Config) func(context.Context, *mcp.CallToolRequest, answerInput) (*mcp.CallToolResult, answerOutput, error) {
+	return makeToolHandler[answerInput, answerOutput](cfg, answerToolName)
+}
+
 func TestSearchHappyPath(t *testing.T) {
 	cfg := searchwire.Config{HTTPClient: fixtureClient(t)}
 	out, err := runSearch(context.Background(), cfg, searchInput{Query: "Go"})
@@ -310,21 +469,21 @@ func TestConfigFromEnv(t *testing.T) {
 	t.Setenv(envLimit, "3")
 	t.Setenv(envTimeout, "2s")
 	t.Setenv(envMaxBytes, "4096")
-	cfg, maxBytes := configFromEnv()
+	cfg := configFromEnv()
 	if cfg.Limit != 3 {
 		t.Fatalf("limit = %d", cfg.Limit)
 	}
 	if cfg.Timeout.String() != "2s" {
 		t.Fatalf("timeout = %v", cfg.Timeout)
 	}
-	if cfg.MaxResponseBytes != 4096 || maxBytes != 4096 {
-		t.Fatalf("max bytes cfg=%d adapter=%d", cfg.MaxResponseBytes, maxBytes)
+	if cfg.MaxResponseBytes != 4096 {
+		t.Fatalf("max bytes cfg=%d", cfg.MaxResponseBytes)
 	}
 }
 
 func TestNewServerRegistersTools(t *testing.T) {
 	t.Setenv(envBraveAPIKey, "")
-	server := newServer(searchwire.Config{HTTPClient: fixtureClient(t)}, 0)
+	server := newServer(searchwire.Config{HTTPClient: fixtureClient(t)})
 	if server == nil {
 		t.Fatal("nil server")
 	}
@@ -337,8 +496,11 @@ func TestAnswerToolRegistrationFollowsResolvedAPIKey(t *testing.T) {
 	t.Setenv(envPerplexityAPIKey, "")
 	t.Setenv(envAnthropicAPIKey, "")
 	t.Setenv(envXAIAPIKey, "")
-	t.Setenv(envXAIAPIKey, "")
-	withoutKey := listToolNames(t, newServer(searchwire.Config{HTTPClient: fixtureClient(t)}, 0))
+	t.Setenv(envOmniAPIKey, "")
+	t.Setenv(envOpenCodeAPIKey, "")
+	t.Setenv(envOpenCode2APIKey, "")
+	t.Setenv("OPENAI", "")
+	withoutKey := listToolNames(t, newServer(searchwire.Config{HTTPClient: fixtureClient(t)}))
 	if containsToolName(withoutKey, answerToolName) {
 		t.Fatalf("tools without key = %#v", withoutKey)
 	}
@@ -346,7 +508,7 @@ func TestAnswerToolRegistrationFollowsResolvedAPIKey(t *testing.T) {
 	withKey := listToolNames(t, newServer(searchwire.Config{
 		HTTPClient: fixtureClient(t),
 		Brave:      searchwire.BraveConfig{APIKey: "brave_test_key"},
-	}, 0))
+	}))
 	if !containsToolName(withKey, answerToolName) {
 		t.Fatalf("tools with key = %#v", withKey)
 	}
@@ -358,15 +520,21 @@ func TestAnswerToolRegistrationSupportsEachLLMProvider(t *testing.T) {
 	t.Setenv(envOpenAIAPIKey, "")
 	t.Setenv(envPerplexityAPIKey, "")
 	t.Setenv(envAnthropicAPIKey, "")
+	t.Setenv(envOmniAPIKey, "")
+	t.Setenv(envOpenCodeAPIKey, "")
+	t.Setenv(envOpenCode2APIKey, "")
+	t.Setenv("OPENAI", "")
 	for name, cfg := range map[string]searchwire.Config{
 		"openrouter": {OpenRouter: searchwire.OpenRouterConfig{APIKey: "openrouter_test_key"}},
 		"openai":     {OpenAI: searchwire.OpenAIConfig{APIKey: "openai_test_key"}},
 		"perplexity": {Perplexity: searchwire.PerplexityConfig{APIKey: "perplexity_test_key"}},
 		"anthropic":  {Anthropic: searchwire.AnthropicConfig{APIKey: "anthropic_test_key"}},
 		"xai":        {XAI: searchwire.XAIConfig{APIKey: "xai_test_key"}},
+		"omniroute":  {OmniRoute: searchwire.OmniRouteConfig{APIKey: "omni_test_key"}},
+		"opencode":   {OpenCode: searchwire.OpenCodeConfig{APIKey: "opencode_test_key"}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			tools := listToolNames(t, newServer(cfg, 0))
+			tools := listToolNames(t, newServer(cfg))
 			if !containsToolName(tools, answerToolName) {
 				t.Fatalf("tools = %#v", tools)
 			}
@@ -382,7 +550,7 @@ func TestAnswerToolRegistrationUsesCustomAPIKeyEnv(t *testing.T) {
 		Brave: searchwire.BraveConfig{
 			APIKeyEnv: "SEARCHWIRE_TEST_BRAVE_KEY",
 		},
-	}, 0))
+	}))
 	if !containsToolName(tools, answerToolName) {
 		t.Fatalf("tools = %#v", tools)
 	}
@@ -816,7 +984,7 @@ func TestFetchWritesTempFileWhenTruncated(t *testing.T) {
 
 func TestConfigFromEnvReadsTempDir(t *testing.T) {
 	t.Setenv(envTempDir, "/tmp/sw-mcp-test")
-	cfg, _ := configFromEnv()
+	cfg := configFromEnv()
 	if cfg.TempDir != "/tmp/sw-mcp-test" {
 		t.Fatalf("TempDir = %q", cfg.TempDir)
 	}
@@ -827,7 +995,7 @@ func TestSearchwireLLMsTxtToolRemoved(t *testing.T) {
 	// surface: llms.txt probing is now an automatic side effect of the
 	// fetch tool on 2xx HTML responses. Agents read the embedded llmsTxt
 	// field instead of calling a separate tool.
-	server := newServer(searchwire.Config{HTTPClient: fixtureClient(t)}, 0)
+	server := newServer(searchwire.Config{HTTPClient: fixtureClient(t)})
 	for _, name := range listToolNames(t, server) {
 		if name == "searchwire_llms_txt" {
 			t.Fatalf("searchwire_llms_txt must not be registered; tools = %v", listToolNames(t, server))
@@ -842,7 +1010,7 @@ func TestToolNamesDropSearchwirePrefix(t *testing.T) {
 	// doubly redundant ("searchwire.searchwire_search"). This is a
 	// regression guard: renaming back to prefixed names would break
 	// every client that adopted the unprefixed convention.
-	tools := listToolNames(t, newServer(searchwire.Config{HTTPClient: fixtureClient(t)}, 0))
+	tools := listToolNames(t, newServer(searchwire.Config{HTTPClient: fixtureClient(t)}))
 	want := map[string]bool{
 		"search": false,
 		"fetch":  false,

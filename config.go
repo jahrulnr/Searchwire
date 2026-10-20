@@ -43,6 +43,8 @@ type Config struct {
 	Perplexity PerplexityConfig
 	Anthropic  AnthropicConfig
 	XAI        XAIConfig
+	OmniRoute  OmniRouteConfig
+	OpenCode   OpenCodeConfig
 	// Google and Custom are future-dev placeholders. They are not read by New()
 	// until their source adapters are implemented.
 	Google GoogleConfig
@@ -143,6 +145,42 @@ type AnthropicConfig struct {
 	APIKeyEnv string
 	// Model overrides ModelEnv (default ANTHROPIC_MODEL), then falls back to
 	// the cost-focused Claude Haiku 4.5 model.
+	Model    string
+	ModelEnv string
+}
+
+// OmniRouteConfig controls web-grounded answers through the OmniRoute/9Router
+// /v1/search endpoint. Unlike the other providers this is a local or
+// self-hosted router, so its base URL is configurable.
+type OmniRouteConfig struct {
+	// Enabled explicitly enables or disables the provider. When set to false,
+	// env var fallback is skipped. nil means default (enabled if key resolves).
+	Enabled *bool
+	// APIKey overrides APIKeyEnv (default OMNI_API_KEY).
+	APIKey    string
+	APIKeyEnv string
+	// BaseURL overrides BaseURLEnv (default OMNI_BASE_URL), then falls back to
+	// http://localhost:20128.
+	BaseURL    string
+	BaseURLEnv string
+	// Provider pins the router's search provider selection. Empty lets the
+	// router pick. ProviderEnv defaults to OMNI_SEARCH_PROVIDER.
+	Provider    string
+	ProviderEnv string
+}
+
+// OpenCodeConfig controls web-grounded answers through the OpenCode Zen
+// Responses API gateway.
+type OpenCodeConfig struct {
+	// Enabled explicitly enables or disables the provider. When set to false,
+	// env var fallback is skipped. nil means default (enabled if key resolves).
+	Enabled *bool
+	// APIKey overrides APIKeyEnv. The env lookup tries OPENCODE_API_KEY first,
+	// then OPENCODE2_API_KEY.
+	APIKey    string
+	APIKeyEnv string
+	// Model overrides ModelEnv (default OPENCODE_MODEL), then falls back to the
+	// cost-focused gpt-5.6-luna model.
 	Model    string
 	ModelEnv string
 }
@@ -255,6 +293,12 @@ type perplexitySettings struct {
 	preset string
 }
 
+type omniRouteSettings struct {
+	apiKey   string
+	baseURL  string
+	provider string
+}
+
 func (b BraveConfig) resolved() braveSettings {
 	settings := braveSettings{enabled: true}
 	if b.Enabled != nil {
@@ -317,10 +361,14 @@ func (c OpenAIConfig) resolved() llmAnswerSettings {
 	if c.Enabled != nil && !*c.Enabled {
 		return llmAnswerSettings{}
 	}
-	return resolveLLMAnswerSettings(
+	settings := resolveLLMAnswerSettings(
 		c.APIKey, c.APIKeyEnv, "OPENAI_API_KEY",
 		c.Model, c.ModelEnv, "OPENAI_MODEL", "gpt-5.6-luna",
 	)
+	if settings.apiKey == "" && c.APIKey == "" && c.APIKeyEnv == "" {
+		settings.apiKey = strings.TrimSpace(os.Getenv("OPENAI"))
+	}
+	return settings
 }
 
 func (c PerplexityConfig) resolved() perplexitySettings {
@@ -352,6 +400,54 @@ func (c XAIConfig) resolved() llmAnswerSettings {
 		c.APIKey, c.APIKeyEnv, "XAI_API_KEY",
 		c.Model, c.ModelEnv, "XAI_MODEL", "grok-4.5",
 	)
+}
+
+func (c OmniRouteConfig) resolved() omniRouteSettings {
+	if c.Enabled != nil && !*c.Enabled {
+		return omniRouteSettings{}
+	}
+	apiKey := strings.TrimSpace(c.APIKey)
+	if apiKey == "" {
+		env := strings.TrimSpace(c.APIKeyEnv)
+		if env == "" {
+			env = "OMNI_API_KEY"
+		}
+		apiKey = strings.TrimSpace(os.Getenv(env))
+	}
+	baseURL := strings.TrimSpace(c.BaseURL)
+	if baseURL == "" {
+		env := strings.TrimSpace(c.BaseURLEnv)
+		if env == "" {
+			env = "OMNI_BASE_URL"
+		}
+		baseURL = strings.TrimSpace(os.Getenv(env))
+	}
+	if baseURL == "" {
+		baseURL = omniRouteDefaultBaseURL
+	}
+	provider := strings.TrimSpace(c.Provider)
+	if provider == "" {
+		env := strings.TrimSpace(c.ProviderEnv)
+		if env == "" {
+			env = "OMNI_SEARCH_PROVIDER"
+		}
+		provider = strings.TrimSpace(os.Getenv(env))
+	}
+	return omniRouteSettings{apiKey: apiKey, baseURL: baseURL, provider: provider}
+}
+
+func (c OpenCodeConfig) resolved() llmAnswerSettings {
+	if c.Enabled != nil && !*c.Enabled {
+		return llmAnswerSettings{}
+	}
+	settings := resolveLLMAnswerSettings(
+		c.APIKey, c.APIKeyEnv, "OPENCODE_API_KEY",
+		c.Model, c.ModelEnv, "OPENCODE_MODEL", "gpt-5.6-luna",
+	)
+	if settings.apiKey == "" && c.APIKey == "" && c.APIKeyEnv == "" {
+		settings.apiKey = strings.TrimSpace(os.Getenv("OPENCODE2_API_KEY"))
+	}
+	return settings
 }
 
 func resolveLLMAnswerSettings(apiKey, apiKeyEnv, defaultAPIKeyEnv, model, modelEnv, defaultModelEnv, defaultModel string) llmAnswerSettings {

@@ -21,7 +21,11 @@ func (g githubSource) search(ctx context.Context, f *fetcher, query string, limi
 		limit = defaultLimit
 	}
 	if !g.searchIssues {
-		return searchGitHubRepos(ctx, f, g.token, query, limit)
+		results, err := searchGitHubRepos(ctx, f, g.token, query, limit)
+		if err != nil {
+			return nil, redactErrorSecret(err, g.token)
+		}
+		return results, nil
 	}
 
 	type outcome struct {
@@ -44,13 +48,13 @@ func (g githubSource) search(ctx context.Context, f *fetcher, query string, limi
 	issueOut := <-issueCh
 
 	if repoOut.err != nil && issueOut.err != nil {
-		return nil, fmt.Errorf("repos: %v; issues: %v", repoOut.err, issueOut.err)
+		return nil, redactErrorSecret(fmt.Errorf("repos: %v; issues: %v", repoOut.err, issueOut.err), g.token)
 	}
 	if issueOut.err != nil {
 		return repoOut.results, nil
 	}
 	if repoOut.err != nil {
-		return nil, repoOut.err
+		return nil, redactErrorSecret(repoOut.err, g.token)
 	}
 	return mergeGitHubResults(repoOut.results, issueOut.results, limit), nil
 }

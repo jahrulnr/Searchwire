@@ -17,6 +17,8 @@ const (
 	AnswerProviderPerplexity = "perplexity"
 	AnswerProviderAnthropic  = "anthropic"
 	AnswerProviderXAI        = "xai"
+	AnswerProviderOmniRoute  = "omniroute"
+	AnswerProviderOpenCode   = "opencode"
 )
 
 type answerProvider interface {
@@ -116,6 +118,12 @@ func answerProvidersFromConfig(cfg Config) []answerProvider {
 	}
 	if settings := cfg.XAI.resolved(); settings.apiKey != "" {
 		providers = append(providers, xAIAnswerProvider{apiKey: settings.apiKey, model: settings.model})
+	}
+	if settings := cfg.OmniRoute.resolved(); settings.apiKey != "" {
+		providers = append(providers, omniRouteAnswerProvider{apiKey: settings.apiKey, baseURL: settings.baseURL, provider: settings.provider})
+	}
+	if settings := cfg.OpenCode.resolved(); settings.apiKey != "" {
+		providers = append(providers, openCodeAnswerProvider{apiKey: settings.apiKey, model: settings.model})
 	}
 	return providers
 }

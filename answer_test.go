@@ -24,9 +24,15 @@ func clearAnswerProviderKeys(t *testing.T) {
 	t.Setenv("BRAVE_SEARCH_API_KEY", "")
 	t.Setenv("OPENROUTER_API_KEY", "")
 	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("OPENAI", "")
 	t.Setenv("PERPLEXITY_API_KEY", "")
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	t.Setenv("XAI_API_KEY", "")
+	t.Setenv("OMNI_API_KEY", "")
+	t.Setenv("OMNI_BASE_URL", "")
+	t.Setenv("OMNI_SEARCH_PROVIDER", "")
+	t.Setenv("OPENCODE_API_KEY", "")
+	t.Setenv("OPENCODE2_API_KEY", "")
 }
 
 func TestAnswerUnavailableWithoutAPIKey(t *testing.T) {
@@ -95,6 +101,7 @@ func TestAnswerRejectsUnavailableRequestedProvider(t *testing.T) {
 func TestOpenRouterAnswerUsesServerWebSearchTool(t *testing.T) {
 	t.Setenv("BRAVE_SEARCH_API_KEY", "")
 	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("OPENAI", "")
 	var requestBody struct {
 		Model    string `json:"model"`
 		Messages []struct {
@@ -175,6 +182,7 @@ func TestPerplexityAnswerUsesLowCostAgentPreset(t *testing.T) {
 	t.Setenv("BRAVE_SEARCH_API_KEY", "")
 	t.Setenv("OPENROUTER_API_KEY", "")
 	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("OPENAI", "")
 	var requestBody struct {
 		Preset string `json:"preset"`
 		Input  string `json:"input"`
@@ -463,5 +471,146 @@ func TestNilSearcherAnswerReturnsError(t *testing.T) {
 	var searcher *Searcher
 	if _, err := searcher.Answer(context.Background(), "What is Go?"); !errors.Is(err, ErrNilSearcher) {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestOmniRouteAnswerUsesRouterSearchEndpoint(t *testing.T) {
+	clearAnswerProviderKeys(t)
+	var requestBody struct {
+		Query      string `json:"query"`
+		Provider   string `json:"provider"`
+		MaxResults int    `json:"max_results"`
+	}
+	client := &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		if err := json.NewDecoder(r.Body).Decode(&requestBody); err != nil {
+			t.Fatal(err)
+		}
+		if r.Method != http.MethodPost || r.URL.String() != "http://router.local:20128/v1/search" {
+			t.Fatalf("request = %s %s", r.Method, r.URL)
+		}
+		if r.Header.Get("Authorization") != "Bearer omni_test_key" {
+			t.Fatalf("authorization = %q", r.Header.Get("Authorization"))
+		}
+		return answerJSONResponse(`{"provider":"tavily","results":[],"answer":{"source":"tavily","text":"synthesized answer","model":"tavily"}}`), nil
+	})}
+	searcher := New(Config{
+		HTTPClient: client,
+		OmniRoute:  OmniRouteConfig{APIKey: "omni_test_key", BaseURL: "http://router.local:20128/", Provider: "tavily"},
+	})
+
+	answer, err := searcher.Answer(context.Background(), "latest news")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requestBody.Query != "latest news" || requestBody.Provider != "tavily" || requestBody.MaxResults != omniRouteSearchLimit {
+		t.Fatalf("request body = %#v", requestBody)
+	}
+	if answer.Provider != "omniroute" || answer.Text != "synthesized answer" {
+		t.Fatalf("answer = %#v", answer)
+	}
+}
+
+func TestOmniRouteAnswerComposesResultsWhenAnswerMissing(t *testing.T) {
+	clearAnswerProviderKeys(t)
+	client := &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.String() != "http://localhost:20128/v1/search" {
+			t.Fatalf("request = %s %s", r.Method, r.URL)
+		}
+		return answerJSONResponse(`{"provider":"brave-search","answer":null,"results":[{"title":"Go","url":"https://go.dev","snippet":"The Go site"},{"title":"Gopher","url":"https://example.com/g","snippet":"Mascot"}]}`), nil
+	})}
+	searcher := New(Config{HTTPClient: client, OmniRoute: OmniRouteConfig{APIKey: "omni_test_key"}})
+
+	answer, err := searcher.Answer(context.Background(), "latest news")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(answer.Text, "Go (https://go.dev)") || !strings.Contains(answer.Text, "Mascot") {
+		t.Fatalf("answer = %#v", answer)
+	}
+}
+
+func TestOmniRouteAnswerReadsEnvConfig(t *testing.T) {
+	clearAnswerProviderKeys(t)
+	t.Setenv("OMNI_API_KEY", "omni_env_key")
+	t.Setenv("OMNI_BASE_URL", "http://router.local:4000")
+	t.Setenv("OMNI_SEARCH_PROVIDER", "duckduckgo")
+	var requestBody struct {
+		Provider string `json:"provider"`
+	}
+	client := &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		if err := json.NewDecoder(r.Body).Decode(&requestBody); err != nil {
+			t.Fatal(err)
+		}
+		if r.URL.String() != "http://router.local:4000/v1/search" {
+			t.Fatalf("request = %s %s", r.Method, r.URL)
+		}
+		if r.Header.Get("Authorization") != "Bearer omni_env_key" {
+			t.Fatalf("authorization = %q", r.Header.Get("Authorization"))
+		}
+		return answerJSONResponse(`{"answer":{"text":"env answer"},"results":[]}`), nil
+	})}
+	searcher := New(Config{HTTPClient: client})
+
+	answer, err := searcher.Answer(context.Background(), "latest news")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requestBody.Provider != "duckduckgo" || answer.Provider != "omniroute" || answer.Text != "env answer" {
+		t.Fatalf("answer = %#v provider = %q", answer, requestBody.Provider)
+	}
+}
+
+func TestOpenCodeAnswerUsesZenResponsesWebSearchTool(t *testing.T) {
+	clearAnswerProviderKeys(t)
+	var requestBody struct {
+		Model string `json:"model"`
+		Input string `json:"input"`
+		Tools []struct {
+			Type string `json:"type"`
+		} `json:"tools"`
+	}
+	client := &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		if err := json.NewDecoder(r.Body).Decode(&requestBody); err != nil {
+			t.Fatal(err)
+		}
+		if r.Method != http.MethodPost || r.URL.String() != "https://opencode.ai/zen/v1/responses" {
+			t.Fatalf("request = %s %s", r.Method, r.URL)
+		}
+		if r.Header.Get("Authorization") != "Bearer opencode_test_key" {
+			t.Fatalf("authorization = %q", r.Header.Get("Authorization"))
+		}
+		return answerJSONResponse(`{"output":[{"type":"web_search_call"},{"type":"message","content":[{"type":"output_text","text":"zen answer"}]}]}`), nil
+	})}
+	searcher := New(Config{HTTPClient: client, OpenCode: OpenCodeConfig{APIKey: "opencode_test_key"}})
+
+	answer, err := searcher.Answer(context.Background(), "latest news")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requestBody.Model != "gpt-5.6-luna" || requestBody.Input != "latest news" || len(requestBody.Tools) != 1 || requestBody.Tools[0].Type != "web_search" {
+		t.Fatalf("request body = %#v", requestBody)
+	}
+	if answer.Provider != "opencode" || answer.Text != "zen answer" {
+		t.Fatalf("answer = %#v", answer)
+	}
+}
+
+func TestOpenCodeAnswerReadsSecondaryEnvKey(t *testing.T) {
+	clearAnswerProviderKeys(t)
+	t.Setenv("OPENCODE2_API_KEY", "opencode2_env_key")
+	client := &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		if r.Header.Get("Authorization") != "Bearer opencode2_env_key" {
+			t.Fatalf("authorization = %q", r.Header.Get("Authorization"))
+		}
+		return answerJSONResponse(`{"output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}]}`), nil
+	})}
+	searcher := New(Config{HTTPClient: client})
+
+	if !searcher.CanAnswer() {
+		t.Fatal("opencode provider not registered from OPENCODE2_API_KEY")
+	}
+	answer, err := searcher.AnswerWithOptions(context.Background(), "q", AnswerOptions{Provider: "opencode"})
+	if err != nil || answer.Text != "ok" {
+		t.Fatalf("answer = %#v err = %v", answer, err)
 	}
 }

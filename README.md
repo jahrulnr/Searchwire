@@ -194,6 +194,30 @@ All sentinel errors are package-level values suitable for `errors.Is`:
 
 Additionally: every-source failure returns `*SearchError` (inspect `.Failures`), and non-2xx responses return `*HTTPError` (inspect with `errors.As`; see Fetch above). Error strings from configured providers have their API keys redacted before returning.
 
+### Tools for agent hosts
+
+`Searcher.Tools()` exposes the same tools the MCP server serves — `search`,
+`fetch`, plus `answer` when an answer-provider key resolves — as
+provider-agnostic definitions a host can register in its own tool list:
+
+```go
+type ToolDef struct {
+    Name        string          // "search" | "fetch" | "answer"
+    Description string          // model-facing description
+    InputSchema json.RawMessage // JSON Schema for the arguments
+    Run         func(ctx context.Context, argsJSON json.RawMessage) (json.RawMessage, error)
+}
+```
+
+`Run` accepts JSON-encoded arguments and returns the same JSON document the
+MCP tool emits. Names are exported as `ToolSearch`, `ToolFetch`, `ToolAnswer`
+so hosts can filter without string literals. Tool errors are redacted of
+every credential the Searcher resolved at construction.
+
+Note that `answer` delegates to a provider-side model (OpenRouter, OpenAI,
+OmniRoute, ...) — hosts that want their *own* model to reason over results
+should register only `search` and `fetch`.
+
 ## MCP Server
 
 Install the stdio adapter:
@@ -222,20 +246,28 @@ Recommended agent workflow: **`search` → pick URLs → `fetch`**. Snippets alo
 
 `answer` is capability-driven: it is absent from MCP tool discovery
 when none of `BRAVE_SEARCH_API_KEY`, `OPENROUTER_API_KEY`, `OPENAI_API_KEY`,
-`PERPLEXITY_API_KEY`, `ANTHROPIC_API_KEY`, or `XAI_API_KEY` is available.
+`PERPLEXITY_API_KEY`, `ANTHROPIC_API_KEY`, `XAI_API_KEY`, `OMNI_API_KEY`,
+`OPENCODE_API_KEY`, or `OPENCODE2_API_KEY` is available.
 Restart the MCP process after adding or removing a key so clients receive the
 updated tool list.
 When multiple providers are configured, omit `provider` to use the stable order
-Brave → OpenRouter → OpenAI → Perplexity → Anthropic → xAI, or pass a provider
-explicitly.
+Brave → OpenRouter → OpenAI → Perplexity → Anthropic → xAI → OmniRoute →
+OpenCode, or pass a provider explicitly.
 
 Brave keys must have access to the Answers plan; a Search-only subscription can
 still produce a provider billing/authorization error. OpenRouter uses its
 current [`openrouter:web_search` server tool](https://openrouter.ai/docs/guides/features/server-tools/web-search)
 and defaults to `openrouter/auto`. OpenAI uses the Responses API
 [`web_search` tool](https://developers.openai.com/api/docs/guides/tools-web-search)
-and defaults to the cost-focused `gpt-5.6-luna`. Override either model with
-configuration or its model env var.
+and defaults to the cost-focused `gpt-5.6-luna`. OpenCode uses the same
+Responses API shape against the OpenCode Zen gateway
+(`https://opencode.ai/zen/v1/responses`) and also defaults to `gpt-5.6-luna`.
+OmniRoute answers through the router's own `POST /v1/search` endpoint
+(default base `http://localhost:20128`, override with `OMNI_BASE_URL`); it
+returns the router's synthesized `answer` when present and otherwise composes
+the response from the top search results. `OMNI_SEARCH_PROVIDER` optionally
+pins the router-side search provider. Override either model or base with
+configuration or its env var.
 
 ### Environment
 
@@ -244,7 +276,7 @@ configuration or its model env var.
 | `BRAVE_SEARCH_API_KEY` | library | Optional official Brave Search API key; replaces the Brave HTML adapter when set |
 | `OPENROUTER_API_KEY` | library | Optional OpenRouter key; enables the `openrouter` answer provider |
 | `OPENROUTER_MODEL` | library | OpenRouter answer model (default `openrouter/auto`) |
-| `OPENAI_API_KEY` | library | Optional OpenAI key; enables the `openai` answer provider |
+| `OPENAI_API_KEY` | library | Optional OpenAI key; enables the `openai` answer provider (falls back to `OPENAI`) |
 | `OPENAI_MODEL` | library | OpenAI answer model (default `gpt-5.6-luna`) |
 | `PERPLEXITY_API_KEY` | library | Optional Perplexity key; enables the `perplexity` answer provider |
 | `PERPLEXITY_PRESET` | library | Perplexity Agent API preset (default `low`) |
@@ -252,6 +284,11 @@ configuration or its model env var.
 | `ANTHROPIC_MODEL` | library | Anthropic answer model (default `claude-haiku-4-5`) |
 | `XAI_API_KEY` | library | Optional xAI key; enables the `xai` answer provider |
 | `XAI_MODEL` | library | xAI answer model (default `grok-4.5`) |
+| `OMNI_API_KEY` | library | Optional OmniRoute/9Router key; enables the `omniroute` answer provider |
+| `OMNI_BASE_URL` | library | OmniRoute gateway base URL (default `http://localhost:20128`) |
+| `OMNI_SEARCH_PROVIDER` | library | Optional router-side search provider pin (e.g. `brave-search`, `tavily`) |
+| `OPENCODE_API_KEY` | library | Optional OpenCode Zen key; enables the `opencode` answer provider (falls back to `OPENCODE2_API_KEY`) |
+| `OPENCODE_MODEL` | library | OpenCode answer model (default `gpt-5.6-luna`) |
 | `GITHUB_TOKEN` | library | Optional GitHub API token (higher rate limits) |
 | `SERPER_API_KEY` | library | Optional Serper.dev API key; enables the Serper.dev source |
 | `TAVILY_API_KEY` | library | Optional Tavily API key; enables the Tavily source |
@@ -365,6 +402,8 @@ mode and structured citation extraction are not yet exposed.
 | Perplexity | `PERPLEXITY_API_KEY` | `PERPLEXITY_PRESET` | `low` preset | Agent API web search + fetch |
 | Anthropic | `ANTHROPIC_API_KEY` | `ANTHROPIC_MODEL` | `claude-haiku-4-5` | Messages API web search |
 | xAI | `XAI_API_KEY` | `XAI_MODEL` | `grok-4.5` | Responses API web search |
+| OmniRoute | `OMNI_API_KEY` | `OMNI_BASE_URL`, `OMNI_SEARCH_PROVIDER` | `http://localhost:20128` | Router `POST /v1/search` (provider pool + optional synthesized answer) |
+| OpenCode | `OPENCODE_API_KEY` (or `OPENCODE2_API_KEY`) | `OPENCODE_MODEL` | `gpt-5.6-luna` | Zen gateway `web_search` |
 
 OpenRouter can route web-grounded requests to supported OpenAI, Anthropic,
 Google, xAI, and Perplexity model families without adding another Searchwire

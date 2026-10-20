@@ -36,6 +36,9 @@ type Searcher struct {
 	tempDir            string
 	sources            []source
 	answerers          []answerProvider
+	// secrets holds every credential resolved during construction so tool
+	// output can redact them regardless of which response they surface in.
+	secrets []string
 }
 
 // New returns a Searcher configured by cfg. Use DefaultConfig() or the zero
@@ -51,7 +54,31 @@ func New(cfg Config) *Searcher {
 		tempDir:            cfg.TempDir,
 		sources:            sourcesFromConfig(cfg),
 		answerers:          answerProvidersFromConfig(cfg),
+		secrets:            secretsFromConfig(cfg),
 	}
+}
+
+// secretsFromConfig collects every configured credential so tool output can
+// redact them no matter which upstream response echoes them back.
+func secretsFromConfig(cfg Config) []string {
+	secrets := make([]string, 0, 10)
+	add := func(v string) {
+		if v = strings.TrimSpace(v); v != "" {
+			secrets = append(secrets, v)
+		}
+	}
+	add(cfg.Brave.resolved().apiKey)
+	add(cfg.Serper.resolved().apiKey)
+	add(cfg.Tavily.resolved().apiKey)
+	add(cfg.GitHub.resolved().token)
+	add(cfg.OpenRouter.resolved().apiKey)
+	add(cfg.OpenAI.resolved().apiKey)
+	add(cfg.Perplexity.resolved().apiKey)
+	add(cfg.Anthropic.resolved().apiKey)
+	add(cfg.XAI.resolved().apiKey)
+	add(cfg.OmniRoute.resolved().apiKey)
+	add(cfg.OpenCode.resolved().apiKey)
+	return secrets
 }
 
 // Response is the merged output of a metasearch query.
