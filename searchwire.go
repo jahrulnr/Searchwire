@@ -94,7 +94,12 @@ type Result struct {
 	URL     string
 	Snippet string
 	Sources []string
-	Score   float64
+	// Score is the reciprocal-rank-fusion weight of the hit normalised
+	// against the top result of this query (top = 1.0). It is a relative
+	// rank within this result set — it orders hits and reflects how many
+	// sources corroborated — not an absolute relevance measure; a query
+	// with no good hits still yields a top score of 1.0.
+	Score float64
 }
 
 // SearchOptions controls one search call. Zero values keep the configured

@@ -93,6 +93,17 @@ func fuseResults(outcomes []sourceOutcome, sources []source, limit int) []Result
 	if limit > len(candidates) {
 		limit = len(candidates)
 	}
+	if limit == 0 {
+		return []Result{}
+	}
+	// Normalise the raw RRF sum against the top candidate so the exposed
+	// score reads as a relative rank on a 0..1 scale (top result = 1.0).
+	// It is a fusion-rank signal only: multi-source hits score ~2x a
+	// single-source hit at the same rank, but it says nothing about how
+	// well any result matches the query — a nonsense query still yields
+	// a top score of 1.0. Sources lists the corroborating engines; that
+	// count is the more meaningful quality hint for a model caller.
+	topScore := candidates[0].score
 	results := make([]Result, limit)
 	for i := 0; i < limit; i++ {
 		c := candidates[i]
@@ -101,7 +112,7 @@ func fuseResults(outcomes []sourceOutcome, sources []source, limit int) []Result
 			URL:     c.url,
 			Snippet: c.snippet,
 			Sources: append([]string(nil), c.sources...),
-			Score:   c.score,
+			Score:   c.score / topScore,
 		}
 	}
 	return results

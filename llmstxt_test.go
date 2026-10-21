@@ -229,6 +229,11 @@ func TestFetchSurfacesLLMsTxtDiscoveryHintsFromHTMLLinks(t *testing.T) {
 	if result.MarkdownAlt != "https://example.com/docs/page.html.md" {
 		t.Fatalf("MarkdownAlt = %q", result.MarkdownAlt)
 	}
+	// The fixture serves the same HTML for the alternate URL — a soft-404 —
+	// so the alternate must be detected but not used as the text.
+	if result.MarkdownAltUsed {
+		t.Fatal("HTML-served alternate should not be used")
+	}
 }
 
 func TestFetchSurfacesHintsFromHTTPLinkHeader(t *testing.T) {

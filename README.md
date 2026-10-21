@@ -70,6 +70,7 @@ func main() {
 | `Truncated` / `Bytes` | Whether the body was capped; bytes read |
 | `DescribedBy` | Absolute URL of the covering `llms.txt` (`rel="describedby"` via HTML `<link>` or HTTP `Link:` header); empty when absent |
 | `MarkdownAlt` | Absolute URL of a markdown alternate version of this page (`rel="alternate"` `type="text/markdown"`); empty when absent |
+| `MarkdownAltUsed` | `true` when `Text` was read from the markdown alternate instead of extracted HTML; the alternate fetch is best-effort and falls back to the HTML-derived text on any failure |
 | `LLMsTxt` / `LLMsTxtURL` | Parsed covering `llms.txt` (auto-attached on 2xx HTML responses; see [llms.txt](#llmstxt)) and its post-redirect URL. `nil`/empty for non-HTML responses, 4xx/5xx source, or when no file exists. |
 | `TempFile` | Absolute path of a file under the configured temp dir (default `os.TempDir()/searchwire`, override via `Config.TempDir` / `SEARCHWIRE_TEMP_DIR`) holding the full extracted text when `Truncated` is true. Lets the agent `file_read` the rest without refetching. Empty when the response was not truncated. |
 
@@ -104,7 +105,8 @@ func main() {
 
 Searchwire implements the client side of the [llmstxt.org](https://llmstxt.org/) v2 proposal — the convention Chrome Lighthouse audits under its Agentic Browsing category:
 
-- **Discovery on every fetch.** When a page advertises its LLM-friendly entry points, `Fetch` reports them resolved to absolute URLs: `DescribedBy` (the covering `llms.txt`, from `<link rel="describedby">` or the RFC 8288 `Link:` header) and `MarkdownAlt` (a markdown version of the fetched page, from `<link rel="alternate" type="text/markdown">`).
+- **Discovery on every fetch.** When a page advertises its LLM-friendly entry points, `Fetch` reports them resolved to absolute URLs: `DescribedBy` (the covering `llms.txt`, from `<link rel="describedby">` or the RFC 8288 `Link:` header) and `MarkdownAlt` (a markdown version of the fetched page, from `<link rel="alternate" type="text/markdown">`). A markdown alternate is also fetched preferentially — when it succeeds, `Text` comes from it and `MarkdownAltUsed` is true; on failure the HTML-derived text is kept and the alternate URL is still reported.
+- **Scoped catalogs in the tool output.** The embedded `llmsTxt` is reduced to its header (`url`/`title`/`summary`, plus the dropped-link count) when the covering file is the site-root catalog and no link points into the fetched page's directory on the same host — a domain-wide index like `github.com/llms.txt` is noise on a repo page. Directory-level files and root pages keep the full parsed content; library callers always get the complete `FetchResult.LLMsTxt`.
 - **Auto-attach on 2xx HTML.** When the source fetch is HTML and the server returns 2xx, `Fetch` probes `<dir>/llms.txt` first and `/llms.txt` second, parses the first one that answers, and embeds it as `FetchResult.LLMsTxt` (with `LLMsTxtURL` for the post-redirect URL). The probe is best-effort and non-fatal: any failure (404/410 fallthrough, soft-404 SPA, 5xx, network error) leaves the field nil and the source fetch still succeeds. **The probe is skipped entirely for non-HTML responses (JSON, plain text, markdown, CSV, XML, RSS, Atom) and for non-2xx source responses** — matching the spec that llms.txt only applies to navigable pages.
 - **Standalone library call.** `Searcher.FetchLLMsTxt(ctx, url)` is still available for callers that want the parsed `*LLMsTxt` without going through a full `Fetch` (e.g. to index a site). It uses the same most-specific-then-root candidate order and 404/410 fallthrough.
 - **Parsing.** `ParseLLMsTxt(content string)` parses llms.txt Markdown leniently into a structured `LLMsTxt`: required `Title` (H1), optional blockquote `Summary`, free-form `Description`, and `Sections` of `[name](url): notes` links. A file without the H1 returns an error wrapping `ErrInvalidLLMsTxt`.
@@ -147,7 +149,7 @@ type Result struct {
 	URL     string // canonical form used for deduplication
 	Snippet string // source-provided snippet; GitHub snippets are HTML-stripped and capped at 320 chars
 	Sources []string
-	Score   float64 // RRF score: higher = more sources agreed on this URL
+	Score   float64 // RRF rank weight normalised to this query's top hit (top = 1.0) — relative rank, not absolute relevance
 }
 ```
 
@@ -237,7 +239,7 @@ searchwire-mcp
 | Name | Input | Output |
 |------|-------|--------|
 | `search` | `{ "query": string, "limit"?: number }` | Searchwire response JSON (`query`, `results`, `errors`) |
-| `fetch` | `{ "url": string, "max_bytes"?: number }` | Page JSON (`url`, `finalUrl`, `statusCode`, `contentType`, `title`, `text`, `links`, `headers`, `redirects`, `truncated`, `bytes`, `describedBy`, `markdownAlt`, `llmsTxt?`, `tempFile?`) |
+| `fetch` | `{ "url": string, "max_bytes"?: number }` | Page JSON (`url`, `finalUrl`, `statusCode`, `contentType`, `title`, `text`, `links`, `headers`, `redirects`, `truncated`, `bytes`, `describedBy`, `markdownAlt`, `markdownAltUsed?`, `llmsTxt?`, `tempFile?`) |
 | `answer` | `{ "question": string, "provider"?: string }` | Web-grounded answer JSON (`question`, `answer`, `provider`); registered only when an answer-provider key is available |
 
 Tool names drop the `searchwire_` prefix because the MCP server name already carries it. Clients address tools as `<server-name>.<tool>` (e.g. `searchwire.search`); a prefixed tool name would be doubly redundant (`searchwire.searchwire_search`). The same applies if you mount this server under a different MCP client with its own namespace.

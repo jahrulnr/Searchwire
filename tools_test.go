@@ -267,3 +267,89 @@ func TestToolErrorsRedactConfiguredSecrets(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+// TestFetchToolScopesRootLLMsTxtCatalog verifies that a site-root llms.txt
+// catalog covering none of the fetched path is reduced to its header:
+// url/title/summary stay (the catalog exists and is worth knowing about)
+// but its link sections are omitted instead of flooding the document with
+// domain-wide navigation unrelated to the page.
+func TestFetchToolScopesRootLLMsTxtCatalog(t *testing.T) {
+	catalog := `# BigCo
+
+> Whole-site docs index.
+
+## Docs
+
+- [Feature](https://example.com/features/x): f
+- [Blog](https://blog.example.com/post)
+
+## More
+
+- [API](https://example.com/api/ref)
+`
+	client := &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		var resp *http.Response
+		switch r.URL.Path {
+		case "/llms.txt":
+			resp = okBody("text/plain", []byte(catalog))
+		case "/jahrulnr/llms.txt", "/features/llms.txt":
+			resp = &http.Response{
+				StatusCode: 404, Status: "404 Not Found",
+				Header: http.Header{"Content-Type": []string{"text/plain"}},
+				Body:   io.NopCloser(strings.NewReader("missing")),
+			}
+		default:
+			resp = okBody("text/html", []byte(`<html><body><p>page</p></body></html>`))
+		}
+		resp.Request = r
+		return resp, nil
+	})}
+	defs := New(Config{HTTPClient: client}).Tools()
+	fetch := findDef(t, defs, ToolFetch)
+
+	// A repo page under /jahrulnr: the catalog links to /features, /api and
+	// a different host — nothing under the page's directory, so sections
+	// are dropped.
+	raw, err := fetch.Run(context.Background(), json.RawMessage(`{"url":"https://example.com/jahrulnr/NusaShell"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out struct {
+		LLMsTxt *struct {
+			URL          string            `json:"url"`
+			Title        string            `json:"title"`
+			Sections     []json.RawMessage `json:"sections"`
+			LinksOmitted int               `json:"linksOmitted"`
+		} `json:"llmsTxt"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.LLMsTxt == nil || out.LLMsTxt.URL == "" || out.LLMsTxt.Title != "BigCo" {
+		t.Fatalf("llmsTxt = %#v", out.LLMsTxt)
+	}
+	if len(out.LLMsTxt.Sections) != 0 || out.LLMsTxt.LinksOmitted != 3 {
+		t.Fatalf("sections = %d omitted = %d", len(out.LLMsTxt.Sections), out.LLMsTxt.LinksOmitted)
+	}
+
+	// A page under /features is covered by the catalog (a link points into
+	// the same directory) — sections pass through in full.
+	raw, err = fetch.Run(context.Background(), json.RawMessage(`{"url":"https://example.com/features/x"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var covered struct {
+		LLMsTxt *struct {
+			Sections []struct {
+				Name  string            `json:"name"`
+				Links []json.RawMessage `json:"links"`
+			} `json:"sections"`
+		} `json:"llmsTxt"`
+	}
+	if err := json.Unmarshal(raw, &covered); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if covered.LLMsTxt == nil || len(covered.LLMsTxt.Sections) != 2 {
+		t.Fatalf("covered llmsTxt = %#v", covered.LLMsTxt)
+	}
+}

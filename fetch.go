@@ -39,6 +39,12 @@ type FetchResult struct {
 	// this page (<link rel="alternate" type="text/markdown"> or the HTTP
 	// Link header equivalent). Empty when absent.
 	MarkdownAlt string
+	// MarkdownAltUsed reports that Text was read from MarkdownAlt rather
+	// than extracted from the fetched HTML. The alternate fetch is
+	// best-effort: when it fails the field stays false and Text carries
+	// the normal HTML-derived content (MarkdownAlt is still reported so
+	// the caller can retry it explicitly).
+	MarkdownAltUsed bool
 	// LLMsTxt is the parsed llms.txt file covering this page, populated
 	// automatically when the source fetch succeeds (2xx), the response
 	// content type is HTML, and a covering llms.txt file can be retrieved
@@ -195,6 +201,23 @@ func (s *Searcher) FetchWithOptions(ctx context.Context, rawURL string, opts Fet
 	// budget to the extracted text. This keeps small budgets useful: a 5 KB
 	// budget now yields 5 KB of real content instead of a fragment of <head>.
 	title, text, links, hints := extractFetchText(mediaType, body)
+	// When the page advertises a markdown alternate (rel="alternate"
+	// type="text/markdown" or the Link header equivalent), prefer it: the
+	// site is explicitly publishing an LLM-friendly version, so its text
+	// is cleaner than HTML stripped to visible text. The fetch is
+	// best-effort — failure keeps the HTML-derived text. Title and links
+	// still come from the HTML page (a markdown body has neither in the
+	// extracted sense).
+	markdownAlt := resolveRef(finalURL, firstNonEmpty(hints.markdownAlt,
+		findLinkHeader(resp.Header["Link"], "alternate", "text/markdown")))
+	markdownAltUsed := false
+	isHTML := isHTMLMediaType(mediaType) || (mediaType == "" && looksLikeHTML(body))
+	if markdownAlt != "" && isHTML && opts.Range == "" {
+		if md, ok := s.fetchMarkdownAlt(ctx, markdownAlt); ok {
+			text = md
+			markdownAltUsed = true
+		}
+	}
 	// Runs of 3+ newlines are blank-line spam from whitespace text nodes and
 	// pretty-printed bodies, not structure; collapse before the budget so
 	// max_bytes measures real content.
@@ -230,10 +253,10 @@ func (s *Searcher) FetchWithOptions(ctx context.Context, rawURL string, opts Fet
 		Bytes:       len(text),
 		DescribedBy: resolveRef(finalURL, firstNonEmpty(hints.describedBy,
 			findLinkHeader(resp.Header["Link"], "describedby", ""))),
-		MarkdownAlt: resolveRef(finalURL, firstNonEmpty(hints.markdownAlt,
-			findLinkHeader(resp.Header["Link"], "alternate", "text/markdown"))),
-		LLMsTxt:    llms.parsed,
-		LLMsTxtURL: llms.url,
+		MarkdownAlt:     markdownAlt,
+		MarkdownAltUsed: markdownAltUsed,
+		LLMsTxt:         llms.parsed,
+		LLMsTxtURL:      llms.url,
 	}
 	if truncated {
 		// Materialize the full extracted text (pre-truncation) to a temp
@@ -528,6 +551,47 @@ func findMetaContent(doc *html.Node, key, val string) string {
 	}
 	walk(doc)
 	return found
+}
+
+// fetchMarkdownAlt retrieves the advertised markdown alternate of a page.
+// It is a single raw GET (not FetchWithOptions) so an alternate that itself
+// carries discovery hints cannot recurse. Returns the decoded body when the
+// response is 2xx with a text/* media type (or none); anything else — 404,
+// HTML soft-404, JSON, oversize, network failure — yields ok=false and the
+// caller keeps the HTML-derived text.
+func (s *Searcher) fetchMarkdownAlt(ctx context.Context, altURL string) (string, bool) {
+	if err := ctx.Err(); err != nil {
+		return "", false
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, altURL, nil)
+	if err != nil {
+		return "", false
+	}
+	req.Header.Set("Accept", "text/markdown, text/plain, text/*;q=0.8, */*;q=0.1")
+	req.Header.Set("User-Agent", s.userAgent)
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return "", false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return "", false
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, s.maxRawResponseSize+1))
+	if err != nil || int64(len(body)) > s.maxRawResponseSize {
+		return "", false
+	}
+	mediaType, charset := parseMediaType(resp.Header.Get("Content-Type"))
+	if mediaType != "" && !isTextLikeMediaType(mediaType) {
+		return "", false
+	}
+	body = decodeBody(body, charset)
+	text := strings.TrimSpace(string(body))
+	if text == "" || looksLikeHTML(body) {
+		return "", false
+	}
+	return text, true
 }
 
 func stripTagsFallback(raw string) string {

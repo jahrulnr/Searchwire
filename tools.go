@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
+	"path"
 	"strings"
 )
 
@@ -42,9 +44,11 @@ const (
 		"Not a full browser: no JavaScript rendering. max_bytes caps the length of the returned " +
 		"readable text (not the raw HTML download); over-limit text is truncated with truncated=true " +
 		"and the full text is also written to a file under the configured temp dir " +
-		"so the agent can read the rest with its file-reading tool. When the source is HTML and the site publishes " +
-		"a covering llms.txt, the parsed file is returned inline (llmsTxt field) so the agent can jump " +
-		"directly to the LLM-friendly documentation."
+		"so the agent can read the rest with its file-reading tool. When the page advertises a markdown " +
+		"alternate (rel=alternate type=text/markdown), that version is fetched preferentially " +
+		"(markdownAltUsed=true). When the source is HTML and the site publishes " +
+		"a covering llms.txt, the parsed file is returned inline (llmsTxt field); a site-root catalog " +
+		"unrelated to the fetched path is reduced to its header only."
 	answerToolDescription = "Answer one question using an optional web-grounded answer provider. " +
 		"The answer is composed by the configured provider's own model. " +
 		"This tool is only exposed when a provider API key is configured."
@@ -179,6 +183,9 @@ type toolFetchOutput struct {
 	Bytes       int               `json:"bytes"`
 	DescribedBy string            `json:"describedBy,omitempty"`
 	MarkdownAlt string            `json:"markdownAlt,omitempty"`
+	// MarkdownAltUsed is true when Text was read from the advertised
+	// markdown alternate rather than extracted from the HTML.
+	MarkdownAltUsed bool `json:"markdownAltUsed,omitempty"`
 	// LinksOmitted counts links dropped by toolFetchMaxLinks so the caller
 	// knows the page had more.
 	LinksOmitted int `json:"linksOmitted,omitempty"`
@@ -200,8 +207,9 @@ type toolLLMsTxtOutput struct {
 	Summary     string               `json:"summary,omitempty"`
 	Description string               `json:"description,omitempty"`
 	Sections    []toolLLMsTxtSection `json:"sections,omitempty"`
-	// LinksOmitted counts llms.txt links dropped by
-	// toolFetchMaxLLMsTxtLinks across all sections.
+	// LinksOmitted counts llms.txt links not echoed: either dropped by
+	// toolFetchMaxLLMsTxtLinks, or omitted entirely when a site-root
+	// catalog covers none of the fetched page's directory.
 	LinksOmitted int `json:"linksOmitted,omitempty"`
 }
 
@@ -230,19 +238,20 @@ func (s *Searcher) runFetchTool(ctx context.Context, argsJSON json.RawMessage) (
 		return nil, s.sanitizeToolError(err)
 	}
 	out := toolFetchOutput{
-		URL:         result.URL,
-		FinalURL:    result.FinalURL,
-		StatusCode:  result.StatusCode,
-		ContentType: result.ContentType,
-		Title:       result.Title,
-		Text:        result.Text,
-		Headers:     result.Headers,
-		Redirects:   result.Redirects,
-		Truncated:   result.Truncated,
-		Bytes:       result.Bytes,
-		DescribedBy: result.DescribedBy,
-		MarkdownAlt: result.MarkdownAlt,
-		TempFile:    result.TempFile,
+		URL:             result.URL,
+		FinalURL:        result.FinalURL,
+		StatusCode:      result.StatusCode,
+		ContentType:     result.ContentType,
+		Title:           result.Title,
+		Text:            result.Text,
+		Headers:         result.Headers,
+		Redirects:       result.Redirects,
+		Truncated:       result.Truncated,
+		Bytes:           result.Bytes,
+		DescribedBy:     result.DescribedBy,
+		MarkdownAlt:     result.MarkdownAlt,
+		MarkdownAltUsed: result.MarkdownAltUsed,
+		TempFile:        result.TempFile,
 	}
 	if len(result.Links) > toolFetchMaxLinks {
 		out.Links = result.Links[:toolFetchMaxLinks]
@@ -259,8 +268,9 @@ func (s *Searcher) runFetchTool(ctx context.Context, argsJSON json.RawMessage) (
 			Summary:     result.LLMsTxt.Summary,
 			Description: result.LLMsTxt.Description,
 		}
+		sections := scopedLLMsTxtSections(result.LLMsTxt, result.FinalURL, result.LLMsTxtURL)
 		remaining := toolFetchMaxLLMsTxtLinks
-		for _, sec := range result.LLMsTxt.Sections {
+		for _, sec := range sections {
 			s := toolLLMsTxtSection{Name: sec.Name}
 			for _, l := range sec.Links {
 				if remaining > 0 {
@@ -272,9 +282,56 @@ func (s *Searcher) runFetchTool(ctx context.Context, argsJSON json.RawMessage) (
 			}
 			llms.Sections = append(llms.Sections, s)
 		}
+		if sections == nil {
+			for _, sec := range result.LLMsTxt.Sections {
+				llms.LinksOmitted += len(sec.Links)
+			}
+		}
 		out.LLMsTxt = &llms
 	}
 	return json.MarshalIndent(out, "", "  ")
+}
+
+// scopedLLMsTxtSections decides which llms.txt sections to echo for a
+// fetched page. A site-root llms.txt is a domain-wide catalog: when the
+// fetched page lives under a subdirectory and no catalog link points into
+// that directory on the same host, the whole catalog is unrelated noise
+// (e.g. github.com/llms.txt on a repo page) — return nil so the output
+// keeps only url/title/summary plus the omitted-link count. A file found
+// at the page's enclosing directory is path-scoped by definition and a
+// root file fetched for a root page legitimately covers it, so both pass
+// through in full.
+func scopedLLMsTxtSections(parsed *LLMsTxt, pageURL, llmsURL string) []LLMsSection {
+	page, perr := url.Parse(pageURL)
+	cat, cerr := url.Parse(llmsURL)
+	if perr != nil || cerr != nil || cat.Path != "/"+llmsTxtFileName {
+		return parsed.Sections
+	}
+	dir := path.Dir(page.Path)
+	if dir == "." || dir == "/" {
+		return parsed.Sections
+	}
+	prefix := dir + "/"
+	total, matched := 0, 0
+	for _, sec := range parsed.Sections {
+		for _, l := range sec.Links {
+			// Catalog links may be relative; resolve them against the
+			// llms.txt URL so a root file written with site-relative
+			// links still scopes correctly.
+			lu, err := cat.Parse(l.URL)
+			if err != nil {
+				continue
+			}
+			total++
+			if strings.EqualFold(lu.Host, page.Host) && (lu.Path == dir || strings.HasPrefix(lu.Path, prefix)) {
+				matched++
+			}
+		}
+	}
+	if total > 0 && matched == 0 {
+		return nil
+	}
+	return parsed.Sections
 }
 
 type toolAnswerArgs struct {

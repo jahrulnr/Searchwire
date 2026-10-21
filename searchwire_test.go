@@ -387,3 +387,31 @@ func TestSearchWithoutOptionsUsesConfiguredLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestFuseResultsNormalisesScore verifies Score is the fusion rank weight
+// normalised against the top hit: the best result is 1.0 and later results
+// decay relative to it. A hit corroborated by two sources outranks a
+// single-source hit at a better position.
+func TestFuseResultsNormalisesScore(t *testing.T) {
+	outcomes := []sourceOutcome{
+		{name: "brave", results: []sourceResult{
+			{title: "top", url: "https://a.example/top", rank: 1},
+			{title: "mid", url: "https://a.example/mid", rank: 30},
+		}},
+		{name: "startpage", results: []sourceResult{
+			{title: "top", url: "https://a.example/top", rank: 5},
+		}},
+	}
+	results := fuseResults(outcomes, defaultSources(), 10)
+	if len(results) != 2 {
+		t.Fatalf("results = %#v", results)
+	}
+	if results[0].URL != "https://a.example/top" || results[0].Score != 1.0 {
+		t.Fatalf("top = %#v", results[0])
+	}
+	// mid raw RRF = 1/90; top raw = 1/61 + 1/65. Normalised ratio:
+	want := (1.0 / (rrfK + 30)) / (1.0/(rrfK+1) + 1.0/(rrfK+5))
+	if got := results[1].Score; got < want-0.001 || got > want+0.001 {
+		t.Fatalf("mid score = %v want ~%v", got, want)
+	}
+}

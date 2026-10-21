@@ -370,7 +370,7 @@ func (s *Searcher) probeLLMsTxtOnce(ctx context.Context, cand string) (*LLMsTxt,
 	// (some sites serve /llms.txt with no header). Reject anything else
 	// (HTML, JSON, etc.) to avoid misclassifying soft-404 pages as the
 	// real llms.txt.
-	if mediaType != "" && !isLLMsTxtAllowedMediaType(mediaType) {
+	if mediaType != "" && !isTextLikeMediaType(mediaType) {
 		return nil, respFinalURL(resp), resp.StatusCode, true
 	}
 
@@ -394,19 +394,16 @@ func respFinalURL(resp *http.Response) string {
 	return ""
 }
 
-// isLLMsTxtAllowedMediaType is the probe's content-type allowlist. It is
-// narrower than Fetch's allowlist: llms.txt is documented as markdown or
-// plain text, never HTML. Unknown / missing types are accepted by the
-// caller (some servers omit Content-Type on .txt responses).
-func isLLMsTxtAllowedMediaType(mt string) bool {
-	switch mt {
-	case "text/markdown", "text/plain", "text/x-markdown", "application/markdown":
-		return true
+// isTextLikeMediaType is the allowlist for plain-text endpoint probes
+// (llms.txt, markdown alternates): markdown, plain text, and other text/*
+// are acceptable; HTML, JSON, XML etc. are rejected so a soft-404 page is
+// not mistaken for the text resource. Unknown / missing types are accepted
+// by the caller (some servers omit Content-Type on .txt responses).
+func isTextLikeMediaType(mt string) bool {
+	if isHTMLMediaType(mt) {
+		return false
 	}
-	if strings.HasPrefix(mt, "text/") {
-		return true
-	}
-	return false
+	return strings.HasPrefix(mt, "text/") || mt == "application/markdown"
 }
 
 // findLinkHeader scans RFC 8288 Link header values for the first field whose

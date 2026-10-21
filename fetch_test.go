@@ -260,3 +260,82 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return fn(req)
 }
+
+// TestFetchPrefersMarkdownAlternate verifies that when an HTML page
+// advertises a markdown alternate, its text is used preferentially while
+// title/links still come from the HTML document.
+func TestFetchPrefersMarkdownAlternate(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		switch r.URL.Path {
+		case "/guide/env":
+			body := `<!doctype html><html><head><title>Env Guide</title>
+<link rel="alternate" type="text/markdown" href="/guide/env.md"></head>
+<body><h1>Env</h1><p>noisy html body</p><a href="https://example.com/other">other</a></body></html>`
+			return &http.Response{
+				StatusCode: 200, Status: "200 OK",
+				Header: http.Header{"Content-Type": []string{"text/html"}},
+				Body:   io.NopCloser(strings.NewReader(body)), Request: r,
+			}, nil
+		case "/guide/env.md":
+			return &http.Response{
+				StatusCode: 200, Status: "200 OK",
+				Header: http.Header{"Content-Type": []string{"text/markdown"}},
+				Body:   io.NopCloser(strings.NewReader("# Env Guide\n\nclean markdown content")), Request: r,
+			}, nil
+		default: // llms.txt probes
+			return &http.Response{
+				StatusCode: 404, Status: "404 Not Found",
+				Header: http.Header{"Content-Type": []string{"text/plain"}},
+				Body:   io.NopCloser(strings.NewReader("missing")), Request: r,
+			}, nil
+		}
+	})}
+	result, err := New(Config{HTTPClient: client}).Fetch(context.Background(), "https://example.com/guide/env")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.MarkdownAltUsed {
+		t.Fatal("expected markdown alternate to be used")
+	}
+	if result.MarkdownAlt != "https://example.com/guide/env.md" {
+		t.Fatalf("MarkdownAlt = %q", result.MarkdownAlt)
+	}
+	if !strings.Contains(result.Text, "clean markdown content") || strings.Contains(result.Text, "noisy html body") {
+		t.Fatalf("text = %q", result.Text)
+	}
+	// Title and links still come from the HTML page.
+	if result.Title != "Env Guide" || len(result.Links) != 1 {
+		t.Fatalf("title/links = %q / %#v", result.Title, result.Links)
+	}
+}
+
+// TestFetchMarkdownAltFallsBackToHTML verifies the alternate fetch is
+// best-effort: a 404 keeps the HTML-derived text while still reporting
+// the advertised alternate URL.
+func TestFetchMarkdownAltFallsBackToHTML(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path == "/page" {
+			body := `<!doctype html><html><head><link rel="alternate" type="text/markdown" href="/page.md"></head><body><p>html body</p></body></html>`
+			return &http.Response{
+				StatusCode: 200, Status: "200 OK",
+				Header: http.Header{"Content-Type": []string{"text/html"}},
+				Body:   io.NopCloser(strings.NewReader(body)), Request: r,
+			}, nil
+		}
+		return &http.Response{
+			StatusCode: 404, Status: "404 Not Found",
+			Header: http.Header{"Content-Type": []string{"text/plain"}},
+			Body:   io.NopCloser(strings.NewReader("missing")), Request: r,
+		}, nil
+	})}
+	result, err := New(Config{HTTPClient: client}).Fetch(context.Background(), "https://example.com/page")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.MarkdownAltUsed {
+		t.Fatal("markdownAlt 404 should not have been used")
+	}
+	if result.MarkdownAlt != "https://example.com/page.md" || !strings.Contains(result.Text, "html body") {
+		t.Fatalf("result = %#v", result)
+	}
+}
