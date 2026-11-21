@@ -24,6 +24,11 @@ var (
 	ErrAnswerUnavailable         = errors.New("searchwire: answer provider is unavailable")
 	ErrAnswerProviderUnavailable = errors.New("searchwire: requested answer provider is unavailable")
 	ErrInvalidProviderResponse   = errors.New("searchwire: invalid provider response")
+	// ErrSourceBlocked is reported for a scraped source that answered with a
+	// bot challenge or CAPTCHA page instead of results. Searchwire does not
+	// attempt to solve or evade such challenges; configure an API-backed
+	// source (e.g. BRAVE_SEARCH_API_KEY) for reliable coverage.
+	ErrSourceBlocked = errors.New("searchwire: source served a bot challenge instead of results")
 )
 
 // SearchError is returned when every built-in source fails.

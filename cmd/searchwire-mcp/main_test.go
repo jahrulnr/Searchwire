@@ -9,15 +9,26 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/jahrulnr/searchwire"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func TestAnswerTimeoutFromEnv(t *testing.T) {
+	t.Setenv("SEARCHWIRE_TIMEOUT", "4s")
+	t.Setenv("SEARCHWIRE_ANSWER_TIMEOUT", "45s")
+	cfg := configFromEnv()
+	if cfg.Timeout != 4*time.Second || cfg.AnswerTimeout != 45*time.Second {
+		t.Fatalf("timeout=%s answer timeout=%s", cfg.Timeout, cfg.AnswerTimeout)
+	}
+}
 
 func (fn roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return fn(req)
@@ -614,12 +625,7 @@ func listToolNames(t *testing.T, server *mcp.Server) []string {
 }
 
 func containsToolName(names []string, target string) bool {
-	for _, name := range names {
-		if name == target {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(names, target)
 }
 
 func TestFetchHappyHTML(t *testing.T) {
@@ -1025,5 +1031,13 @@ func TestToolNamesDropSearchwirePrefix(t *testing.T) {
 	}
 	if !want["search"] || !want["fetch"] {
 		t.Fatalf("expected search + fetch to be registered; tools = %v, want map = %v", tools, want)
+	}
+}
+
+func TestConfigFromEnvReadsDefaultSources(t *testing.T) {
+	t.Setenv(envDefaultSources, " brave, openalex ,,arxiv ")
+	cfg := configFromEnv()
+	if len(cfg.DefaultSources) != 3 || cfg.DefaultSources[1] != "openalex" || cfg.DefaultSources[2] != "arxiv" {
+		t.Fatalf("DefaultSources = %#v", cfg.DefaultSources)
 	}
 }

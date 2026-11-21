@@ -117,7 +117,7 @@ func TestBraveDisabledRemovesSource(t *testing.T) {
 
 func TestBraveAPIKeyReplacesHTMLSource(t *testing.T) {
 	s := New(Config{Brave: BraveConfig{APIKey: "brave_test_key"}})
-	if len(s.sources) != 4 {
+	if len(s.sources) != 10 {
 		t.Fatalf("sources = %d", len(s.sources))
 	}
 	brave, ok := s.sources[0].(braveSource)
@@ -129,7 +129,7 @@ func TestBraveAPIKeyReplacesHTMLSource(t *testing.T) {
 func TestGitHubDisabledRemovesSource(t *testing.T) {
 	disabled := false
 	s := New(Config{GitHub: GitHubConfig{Enabled: &disabled}})
-	if len(s.sources) != 3 {
+	if len(s.sources) != 9 {
 		t.Fatalf("sources = %d", len(s.sources))
 	}
 }
@@ -150,7 +150,7 @@ func TestGitHubReposOnlyMode(t *testing.T) {
 		HTTPClient: client,
 		GitHub:     GitHubConfig{SearchIssues: &issues},
 	})
-	if len(s.sources) != 4 {
+	if len(s.sources) != 10 {
 		t.Fatalf("sources = %d", len(s.sources))
 	}
 	if _, err := s.Search(context.Background(), "go"); err != nil {

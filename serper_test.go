@@ -100,7 +100,7 @@ func TestSerperDisabledByDefault(t *testing.T) {
 
 func TestSerperSourceNotAddedWithoutKey(t *testing.T) {
 	sources := sourcesFromConfig(Config{Serper: SerperConfig{}})
-	if len(sources) != 4 {
+	if len(sources) != 10 {
 		t.Fatalf("sources = %d", len(sources))
 	}
 	if containsString(sourceNames(sources), "serper") {

@@ -16,7 +16,7 @@ func attrValue(node *html.Node, name string) string {
 }
 
 func hasClassToken(classValue, token string) bool {
-	for _, part := range strings.Fields(classValue) {
+	for part := range strings.FieldsSeq(classValue) {
 		if part == token {
 			return true
 		}

@@ -206,13 +206,6 @@ func mergeGitHubResults(repos, issues []sourceResult, limit int) []sourceResult 
 	return merged
 }
 
-func truncateSnippet(value string, max int) string {
-	if max <= 0 || len(value) <= max {
-		return value
-	}
-	return strings.TrimSpace(value[:max-3]) + "..."
-}
-
 // sanitizeSnippet strips HTML tags and decodes entities from a raw snippet
 // (GitHub issue/repo fields can carry markup), then collapses whitespace.
 // Run it before any length cap so tags never reach agent context.
@@ -221,6 +214,31 @@ func sanitizeSnippet(value string) string {
 	if !strings.ContainsAny(value, "<&") {
 		return value
 	}
-	value = html.UnescapeString(stripTagsFallback(value))
-	return collapseWhitespace(value)
+	// Tags become spaces so block boundaries ("<h4>Background</h4>There")
+	// do not glue words together; collapseWhitespace absorbs the extras.
+	value = collapseWhitespace(html.UnescapeString(replaceTags(value, " ")))
+	return spaceBeforePunct.Replace(value)
+}
+
+// spaceBeforePunct undoes the space an inline closing tag leaves before
+// punctuation ("<b>x</b>." → "x .").
+var spaceBeforePunct = strings.NewReplacer(" .", ".", " ,", ",", " ;", ";", " :", ":", " !", "!", " ?", "?", " )", ")")
+
+// replaceTags substitutes every <...> tag in raw with sep.
+func replaceTags(raw, sep string) string {
+	var b strings.Builder
+	b.Grow(len(raw))
+	inTag := false
+	for _, r := range raw {
+		switch {
+		case r == '<':
+			inTag = true
+		case r == '>' && inTag:
+			inTag = false
+			b.WriteString(sep)
+		case !inTag:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }

@@ -100,7 +100,7 @@ func TestTavilyDisabledByDefault(t *testing.T) {
 
 func TestTavilySourceNotAddedWithoutKey(t *testing.T) {
 	sources := sourcesFromConfig(Config{Tavily: TavilyConfig{}})
-	if len(sources) != 4 {
+	if len(sources) != 10 {
 		t.Fatalf("sources = %d", len(sources))
 	}
 	if containsString(sourceNames(sources), "tavily") {

@@ -1,0 +1,100 @@
+{
+ "hitCount": 16751,
+ "resultList": {
+  "result": [
+   {
+    "id": "PMC13657966",
+    "source": "PMC",
+    "pmcid": "PMC13657966",
+    "title": "Biomedical retrieval-augmented generation for relation classification",
+    "citedByCount": 0,
+    "journalInfo": {
+     "journal": {
+      "title": "Frontiers in research metrics and analytics"
+     }
+    },
+    "fullTextUrlList": {
+     "fullTextUrl": [
+      {
+       "availability": "Free",
+       "availabilityCode": "F",
+       "documentStyle": "html",
+       "site": "PubMedCentral",
+       "url": "https://www.ncbi.nlm.nih.gov/pmc/articles/PMC13657966/?tool=EBI"
+      },
+      {
+       "availability": "Free",
+       "availabilityCode": "F",
+       "documentStyle": "pdf",
+       "site": "PubMedCentral",
+       "url": "https://www.ncbi.nlm.nih.gov/pmc/articles/PMC13657966/pdf/?tool=EBI"
+      },
+      {
+       "availability": "Free",
+       "availabilityCode": "F",
+       "documentStyle": "html",
+       "site": "Europe_PMC",
+       "url": "https://europepmc.org/articles/PMC13657966"
+      },
+      {
+       "availability": "Free",
+       "availabilityCode": "F",
+       "documentStyle": "pdf",
+       "site": "Europe_PMC",
+       "url": "https://europepmc.org/articles/PMC13657966?pdf=render"
+      }
+     ]
+    },
+    "isOpenAccess": "Y"
+   },
+   {
+    "id": "42871107",
+    "source": "MED",
+    "pmid": "42871107",
+    "doi": "10.3389/frma.2026.1919972",
+    "title": "Biomedical retrieval-augmented generation for relation classification.",
+    "pubYear": "2026",
+    "citedByCount": 0,
+    "abstractText": "The rapid expansion of biomedical literature requires automated methods for accurate and efficient information extraction. This study addresses relation classification: given a pair of annotated biomedical entities in a research article title and abstract, assigning the relation that holds between them from a pre-defined set. We evaluate a retrieval-augmented generation (RAG) framework in which semantically similar annotated examples are retrieved from a training pool and supplied to a large language model as in-context demonstrations. Four open-source LLMs are compared against a supervised DeBERTa+CNN baseline on GutBrainIE, and four further corpora (ChemProt, BioRED, its BioCreative VIII r",
+    "journalInfo": {
+     "journal": {
+      "title": "Frontiers in research metrics and analytics"
+     }
+    },
+    "fullTextUrlList": {
+     "fullTextUrl": [
+      {
+       "availability": "Subscription required",
+       "availabilityCode": "S",
+       "documentStyle": "doi",
+       "site": "DOI",
+       "url": "https://doi.org/10.3389/frma.2026.1919972"
+      }
+     ]
+    },
+    "isOpenAccess": "N"
+   },
+   {
+    "id": "PPR1372472",
+    "source": "PPR",
+    "doi": "10.20944/preprints202611.1771.v1",
+    "title": "A Comprehensive Survey of Retrieval-Augmented Generation: From Foundations to Frontiers",
+    "pubYear": "2026",
+    "citedByCount": 0,
+    "abstractText": "Large Language Models demonstrate strong generative capabilities but remain constrained by static training data, susceptibility to hallucination, and an inability to access current or domain-specific information at inference time. RetrievalAugmented Generation (RAG) addresses these limitations by coupling language models with external retrieval mechanisms that dynamically supply relevant knowledge during generation. In the years since its introduction, RAG has expanded from a single architecture into a broad ecosystem of retrieval modalities, architectural variants, and deployment patterns that is increasingly difficult to navigate. This survey provides a unified treatment of that landscape,",
+    "fullTextUrlList": {
+     "fullTextUrl": [
+      {
+       "availability": "Free",
+       "availabilityCode": "F",
+       "documentStyle": "doi",
+       "site": "DOI",
+       "url": "https://doi.org/10.20944/preprints202611.1771.v1"
+      }
+     ]
+    },
+    "isOpenAccess": "N"
+   }
+  ]
+ }
+}

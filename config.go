@@ -25,11 +25,34 @@ type Config struct {
 	// download, independent of the caller text budget.
 	MaxRawResponseBytes int64
 	Timeout             time.Duration
+	// AnswerTimeout applies to answer requests using the built-in HTTP client.
+	// Defaults to Timeout when set, otherwise 60 seconds. A custom HTTPClient
+	// controls its own timeouts and takes precedence over both values.
+	AnswerTimeout time.Duration
 
 	Brave  BraveConfig
 	Serper SerperConfig
 	Tavily TavilyConfig
 	GitHub GitHubConfig
+	// StackExchange and HackerNews are keyless developer-focused sources,
+	// enabled by default.
+	StackExchange StackExchangeConfig
+	HackerNews    HackerNewsConfig
+	// Scholarly sources (OpenAlex, arXiv, Europe PMC, Crossref, Semantic
+	// Scholar) are registered but opt-in: they run only when a search names
+	// them in SearchOptions.Sources or they are listed in DefaultSources.
+	OpenAlex        OpenAlexConfig
+	ArXiv           ArXivConfig
+	EuropePMC       EuropePMCConfig
+	Crossref        CrossrefConfig
+	SemanticScholar SemanticScholarConfig
+	// Embedding enables semantic reranking with a local static embedding
+	// model. Unset means lexical relevance only.
+	Embedding EmbeddingConfig
+	// DefaultSources names the sources a search fans out to when the call
+	// names none. Empty means every registered source except opt-in ones.
+	// Unknown names are ignored; if none match, the empty default applies.
+	DefaultSources []string
 	// TempDir overrides the directory used to materialize truncated fetch
 	// artifacts. Empty falls back to os.TempDir() + "searchwire". The
 	// directory is created on demand. Each artifact is named
@@ -91,6 +114,95 @@ type TavilyConfig struct {
 	// APIKeyEnv names the environment variable for APIKey
 	// (default TAVILY_API_KEY).
 	APIKeyEnv string
+}
+
+// StackExchangeConfig controls the built-in Stack Exchange API source
+// (question/answer excerpt search). It works without a key at ~300
+// requests/day per IP; a free app key raises the quota to 10,000.
+type StackExchangeConfig struct {
+	// Enabled registers the source. Default true.
+	Enabled *bool
+	// APIKey is sent as the key query parameter. When empty, APIKeyEnv is read.
+	APIKey string
+	// APIKeyEnv names the environment variable for APIKey
+	// (default STACKEXCHANGE_API_KEY).
+	APIKeyEnv string
+	// Site is the Stack Exchange site parameter (default "stackoverflow"),
+	// e.g. "serverfault", "unix", "math".
+	Site string
+}
+
+// HackerNewsConfig controls the built-in Hacker News (Algolia HN Search API)
+// story source. It needs no credentials.
+type HackerNewsConfig struct {
+	// Enabled registers the source. Default true.
+	Enabled *bool
+}
+
+// OpenAlexConfig controls the opt-in OpenAlex scholarly source. Without a
+// key, requests share a small free daily budget per IP; a free key gives
+// each user its own budget.
+type OpenAlexConfig struct {
+	// Enabled registers the source (opt-in; see Config.DefaultSources).
+	// Default true.
+	Enabled *bool
+	// APIKey is sent as api_key. When empty, APIKeyEnv is read.
+	APIKey string
+	// APIKeyEnv names the environment variable for APIKey
+	// (default OPENALEX_API_KEY).
+	APIKeyEnv string
+}
+
+// ArXivConfig controls the opt-in arXiv preprint source. Requests are spaced
+// at least 3 seconds apart process-wide, as arXiv asks of API clients.
+type ArXivConfig struct {
+	// Enabled registers the source. Default true.
+	Enabled *bool
+}
+
+// EuropePMCConfig controls the opt-in Europe PMC (life sciences, includes
+// PubMed) source.
+type EuropePMCConfig struct {
+	// Enabled registers the source. Default true.
+	Enabled *bool
+}
+
+// CrossrefConfig controls the opt-in Crossref journal-article source. It
+// covers publishers that other indexes miss, including many regional
+// journals.
+type CrossrefConfig struct {
+	// Enabled registers the source. Default true.
+	Enabled *bool
+}
+
+// SemanticScholarConfig controls the opt-in Semantic Scholar source. It is
+// registered only when an API key resolves: the keyless pool is shared by
+// all anonymous clients and is usually exhausted.
+type SemanticScholarConfig struct {
+	// Enabled registers the source when a key resolves. Default true.
+	Enabled *bool
+	// APIKey is sent as X-Api-Key. When empty, APIKeyEnv is read.
+	APIKey string
+	// APIKeyEnv names the environment variable for APIKey
+	// (default SEMANTIC_SCHOLAR_API_KEY).
+	APIKeyEnv string
+}
+
+// EmbeddingConfig points at a model2vec-format static embedding model
+// directory (model.safetensors, tokenizer.json, config.json), e.g.
+// minishlab/potion-base-8M. The model is read once per process; nothing is
+// downloaded. A model that fails to load leaves search on lexical
+// relevance and adds a warning to each response.
+type EmbeddingConfig struct {
+	// ModelDir is the model directory. When empty, ModelDirEnv is read.
+	ModelDir string
+	// ModelDirEnv names the environment variable for ModelDir
+	// (default SEARCHWIRE_EMBEDDING_MODEL).
+	ModelDirEnv string
+}
+
+func (c EmbeddingConfig) modelDir() string {
+	return keyFromConfigOrEnv(c.ModelDir, c.ModelDirEnv, "SEARCHWIRE_EMBEDDING_MODEL")
 }
 
 // OpenRouterConfig controls web-grounded answers through OpenRouter.
@@ -277,6 +389,60 @@ type githubSettings struct {
 	enabled      bool
 	token        string
 	searchIssues bool
+}
+
+const stackExchangeDefaultSite = "stackoverflow"
+
+type stackExchangeSettings struct {
+	enabled bool
+	apiKey  string
+	site    string
+}
+
+func (c StackExchangeConfig) resolved() stackExchangeSettings {
+	settings := stackExchangeSettings{enabled: true, site: strings.TrimSpace(c.Site)}
+	if c.Enabled != nil {
+		settings.enabled = *c.Enabled
+	}
+	if settings.site == "" {
+		settings.site = stackExchangeDefaultSite
+	}
+	settings.apiKey = strings.TrimSpace(c.APIKey)
+	if settings.apiKey == "" {
+		env := strings.TrimSpace(c.APIKeyEnv)
+		if env == "" {
+			env = "STACKEXCHANGE_API_KEY"
+		}
+		settings.apiKey = strings.TrimSpace(os.Getenv(env))
+	}
+	return settings
+}
+
+// enabledByDefault resolves an optional Enabled flag that defaults to true.
+func enabledByDefault(flag *bool) bool { return flag == nil || *flag }
+
+// keyFromConfigOrEnv returns the explicit key, else the named (or default)
+// environment variable.
+func keyFromConfigOrEnv(key, env, defaultEnv string) string {
+	if key = strings.TrimSpace(key); key != "" {
+		return key
+	}
+	if env = strings.TrimSpace(env); env == "" {
+		env = defaultEnv
+	}
+	return strings.TrimSpace(os.Getenv(env))
+}
+
+func (c OpenAlexConfig) apiKey() string {
+	return keyFromConfigOrEnv(c.APIKey, c.APIKeyEnv, "OPENALEX_API_KEY")
+}
+
+func (c SemanticScholarConfig) apiKey() string {
+	return keyFromConfigOrEnv(c.APIKey, c.APIKeyEnv, "SEMANTIC_SCHOLAR_API_KEY")
+}
+
+func (c HackerNewsConfig) resolved() bool {
+	return c.Enabled == nil || *c.Enabled
 }
 
 type braveSettings struct {
@@ -520,7 +686,7 @@ func (g GitHubConfig) resolved() githubSettings {
 }
 
 func sourcesFromConfig(cfg Config) []source {
-	sources := make([]source, 0, 4)
+	sources := make([]source, 0, 13)
 	if settings := cfg.Brave.resolved(); settings.enabled {
 		sources = append(sources, braveSource{apiKey: settings.apiKey})
 	}
@@ -540,6 +706,29 @@ func sourcesFromConfig(cfg Config) []source {
 			token:        settings.token,
 			searchIssues: settings.searchIssues,
 		})
+	}
+	if settings := cfg.StackExchange.resolved(); settings.enabled {
+		sources = append(sources, stackExchangeSource{apiKey: settings.apiKey, site: settings.site})
+	}
+	if cfg.HackerNews.resolved() {
+		sources = append(sources, hackerNewsSource{})
+	}
+	// Opt-in scholarly sources: registered so a search can name them, but
+	// outside the default fan-out unless listed in Config.DefaultSources.
+	if enabledByDefault(cfg.OpenAlex.Enabled) {
+		sources = append(sources, openAlexSource{apiKey: cfg.OpenAlex.apiKey()})
+	}
+	if key := cfg.SemanticScholar.apiKey(); key != "" && enabledByDefault(cfg.SemanticScholar.Enabled) {
+		sources = append(sources, semanticScholarSource{apiKey: key})
+	}
+	if enabledByDefault(cfg.ArXiv.Enabled) {
+		sources = append(sources, arXivSource{})
+	}
+	if enabledByDefault(cfg.EuropePMC.Enabled) {
+		sources = append(sources, europePMCSource{})
+	}
+	if enabledByDefault(cfg.Crossref.Enabled) {
+		sources = append(sources, crossrefSource{})
 	}
 	return sources
 }

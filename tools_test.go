@@ -19,6 +19,8 @@ func toolFixtureClient(t *testing.T) *http.Client {
 	wikipedia := readFixture(t, "wikipedia-results.json")
 	repos := readFixture(t, "github-repos.json")
 	issues := readFixture(t, "github-issues.json")
+	stackexchange := readFixture(t, "stackexchange-excerpts.json")
+	hackernews := readFixture(t, "hackernews-search.json")
 
 	return &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
 		host := r.URL.Host
@@ -34,6 +36,10 @@ func toolFixtureClient(t *testing.T) *http.Client {
 			return okBody("application/json", repos), nil
 		case strings.Contains(host, "api.github.com") && strings.Contains(path, "/search/issues"):
 			return okBody("application/json", issues), nil
+		case strings.Contains(host, "api.stackexchange.com"):
+			return okBody("application/json", stackexchange), nil
+		case strings.Contains(host, "hn.algolia.com"):
+			return okBody("application/json", hackernews), nil
 		default:
 			return &http.Response{
 				StatusCode: http.StatusNotFound,
@@ -164,14 +170,15 @@ func TestAnswerToolRunDecodesArgsAndReturnsJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out struct {
-		Question string `json:"question"`
-		Answer   string `json:"answer"`
-		Provider string `json:"provider"`
+		Question     string `json:"question"`
+		Answer       string `json:"answer"`
+		Provider     string `json:"provider"`
+		SearchStatus string `json:"searchStatus"`
 	}
 	if err := json.Unmarshal(raw, &out); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if out.Answer != "grounded" || out.Provider != "brave" {
+	if out.Answer != "grounded" || out.Provider != "brave" || out.SearchStatus != "unknown" {
 		t.Fatalf("out = %#v", out)
 	}
 }
@@ -179,13 +186,13 @@ func TestAnswerToolRunDecodesArgsAndReturnsJSON(t *testing.T) {
 func TestFetchToolBoundsPageLinksAndLLMsTxt(t *testing.T) {
 	var page strings.Builder
 	page.WriteString("<html><body><p>hi</p>")
-	for i := 0; i < toolFetchMaxLinks+10; i++ {
+	for i := range toolFetchMaxLinks + 10 {
 		fmt.Fprintf(&page, `<a href="https://example.com/p%d">link %d</a>`, i, i)
 	}
 	page.WriteString("</body></html>")
 	var llms strings.Builder
 	llms.WriteString("# Docs\n\n## Big\n")
-	for i := 0; i < toolFetchMaxLLMsTxtLinks+25; i++ {
+	for i := range toolFetchMaxLLMsTxtLinks + 25 {
 		fmt.Fprintf(&llms, "- [d%d](https://example.com/d%d)\n", i, i)
 	}
 	client := &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {

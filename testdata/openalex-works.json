@@ -1,0 +1,219 @@
+{
+ "results": [
+  {
+   "id": "https://openalex.org/W4410705984",
+   "doi": "https://doi.org/10.18653/2026.findings-aacl.151",
+   "display_name": "Corrective Retrieval Augmented Generation",
+   "publication_year": 2026,
+   "cited_by_count": 749,
+   "type": "conference-paper",
+   "primary_location": {
+    "landing_page_url": "https://doi.org/10.18653/2026.findings-aacl.151",
+    "source": null
+   },
+   "open_access": {
+    "is_oa": true,
+    "oa_status": "gold",
+    "oa_url": "https://aclanthology.org/2026.findings-aacl.151.pdf",
+    "any_repository_has_fulltext": true
+   },
+   "abstract_inverted_index": {
+    "Large": [
+     0
+    ],
+    "language": [
+     1
+    ],
+    "models": [
+     2
+    ],
+    "(LLMs)": [
+     3
+    ],
+    "inevitably": [
+     4
+    ],
+    "exhibit": [
+     5
+    ],
+    "hallucinations": [
+     6
+    ],
+    "since": [
+     7
+    ],
+    "the": [
+     8,
+     18,
+     36,
+     45,
+     69,
+     130
+    ],
+    "accuracy": [
+     9
+    ],
+    "of": [
+     10,
+     38,
+     149
+    ],
+    "generated": [
+     11
+    ],
+    "texts": [
+     12
+    ],
+    "cannot": [
+     13
+    ],
+    "be": [
+     14,
+     142
+    ],
+    "secured": [
+     15
+    ],
+    "solely": [
+     16
+    ],
+    "by": [
+     17
+    ],
+    "parametric": [
+     19
+    ],
+    "knowledge": [
+     20,
+     110
+    ],
+    "they": [
+     21
+    ],
+    "encapsulate.Although": [
+     22
+    ],
+    "retrieval-augmented": [
+     23
+    ],
+    "generation": [
+     24
+    ]
+   }
+  },
+  {
+   "id": "https://openalex.org/W4416379250",
+   "doi": "https://doi.org/10.1145/3777378",
+   "display_name": "Graph Retrieval-Augmented Generation: A Survey",
+   "publication_year": 2025,
+   "cited_by_count": 934,
+   "type": "article",
+   "primary_location": {
+    "landing_page_url": "https://doi.org/10.1145/3777378",
+    "source": {
+     "display_name": "ACM Transactions on Information Systems"
+    }
+   },
+   "open_access": {
+    "is_oa": true,
+    "oa_status": "green",
+    "oa_url": "https://arxiv.org/pdf/2408.08921",
+    "any_repository_has_fulltext": true
+   },
+   "abstract_inverted_index": {
+    "Recently,": [
+     0
+    ],
+    "Retrieval-Augmented": [
+     1
+    ],
+    "Generation": [
+     2
+    ],
+    "(RAG)": [
+     3
+    ],
+    "has": [
+     4
+    ],
+    "achieved": [
+     5
+    ],
+    "remarkable": [
+     6
+    ],
+    "success": [
+     7
+    ],
+    "in": [
+     8,
+     52,
+     161
+    ],
+    "addressing": [
+     9
+    ],
+    "the": [
+     10,
+     44,
+     84,
+     101,
+     110,
+     124,
+     162
+    ],
+    "challenges": [
+     11,
+     55
+    ],
+    "of": [
+     12,
+     37,
+     47,
+     88,
+     93,
+     105,
+     146
+    ],
+    "Large": [
+     13
+    ],
+    "Language": [
+     14
+    ],
+    "Models": [
+     15
+    ],
+    "(LLMs)": [
+     16
+    ],
+    "without": [
+     17
+    ],
+    "necessitating": [
+     18
+    ],
+    "retraining.": [
+     19
+    ],
+    "By": [
+     20
+    ],
+    "referencing": [
+     21
+    ],
+    "an": [
+     22
+    ],
+    "external": [
+     23
+    ],
+    "knowledge": [
+     24,
+     76
+    ]
+   }
+  }
+ ],
+ "group_by": []
+}

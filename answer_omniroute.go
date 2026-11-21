@@ -45,30 +45,34 @@ type omniRouteAnswerBody struct {
 	Text string `json:"text"`
 }
 
-func (p omniRouteAnswerProvider) answer(ctx context.Context, f *fetcher, question string) (string, error) {
+func (p omniRouteAnswerProvider) answer(ctx context.Context, f *fetcher, question string) (answerResult, error) {
 	payload, err := json.Marshal(omniRouteSearchRequest{
 		Query:      question,
 		Provider:   p.provider,
 		MaxResults: omniRouteSearchLimit,
 	})
 	if err != nil {
-		return "", fmt.Errorf("encode omniroute search request: %w", err)
+		return answerResult{}, fmt.Errorf("encode omniroute search request: %w", err)
 	}
 
 	headers := http.Header{"Authorization": []string{"Bearer " + p.apiKey}}
 	body, err := f.postJSON(ctx, strings.TrimRight(p.baseURL, "/")+"/v1/search", payload, headers)
 	if err != nil {
-		return "", redactErrorSecret(err, p.apiKey)
+		return answerResult{}, redactErrorSecret(err, p.apiKey)
 	}
 	var response omniRouteSearchResponse
 	if err := json.Unmarshal(body, &response); err != nil {
-		return "", fmt.Errorf("%w: parse omniroute search: %v", ErrInvalidProviderResponse, err)
+		return answerResult{}, fmt.Errorf("%w: parse omniroute search: %v", ErrInvalidProviderResponse, err)
 	}
 	if answer := parseOmniRouteAnswer(response.Answer); answer != "" {
-		return strings.ReplaceAll(answer, p.apiKey, "[redacted]"), nil
+		var sources []answerSource
+		for _, result := range response.Results {
+			sources = append(sources, answerSource{Title: result.Title, URL: result.URL})
+		}
+		return answerResult{Text: strings.ReplaceAll(appendAnswerSources(answer, "Search results", sources), p.apiKey, "[redacted]"), SearchStatus: "observed"}, nil
 	}
 	if len(response.Results) == 0 {
-		return "", ErrInvalidProviderResponse
+		return answerResult{}, ErrInvalidProviderResponse
 	}
 	var b strings.Builder
 	for i, result := range response.Results {
@@ -82,9 +86,9 @@ func (p omniRouteAnswerProvider) answer(ctx context.Context, f *fetcher, questio
 	}
 	answer := strings.TrimSpace(b.String())
 	if answer == "" {
-		return "", ErrInvalidProviderResponse
+		return answerResult{}, ErrInvalidProviderResponse
 	}
-	return strings.ReplaceAll(answer, p.apiKey, "[redacted]"), nil
+	return answerResult{Text: strings.ReplaceAll(answer, p.apiKey, "[redacted]"), SearchStatus: "observed"}, nil
 }
 
 func parseOmniRouteAnswer(raw json.RawMessage) string {

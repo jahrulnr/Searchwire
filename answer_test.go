@@ -359,7 +359,7 @@ func TestLLMAnswerProvidersNeverExposeAPIKeys(t *testing.T) {
 	}
 }
 
-func TestAnswerUsesBraveBlockingEndpoint(t *testing.T) {
+func TestAnswerUsesBraveEndpointWithCitations(t *testing.T) {
 	var request *http.Request
 	var requestBody braveAnswerRequest
 	client := &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
@@ -392,7 +392,7 @@ func TestAnswerUsesBraveBlockingEndpoint(t *testing.T) {
 	if request.Header.Get("X-Subscription-Token") != "brave_test_key" || request.Header.Get("Content-Type") != "application/json" {
 		t.Fatalf("headers = %#v", request.Header)
 	}
-	if requestBody.Model != "brave" || requestBody.Stream || len(requestBody.Messages) != 1 {
+	if requestBody.Model != "brave" || !requestBody.Stream || !requestBody.EnableCitations || len(requestBody.Messages) != 1 {
 		t.Fatalf("request body = %#v", requestBody)
 	}
 	if requestBody.Messages[0].Role != "user" || requestBody.Messages[0].Content != "What is Go?" {

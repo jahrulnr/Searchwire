@@ -55,6 +55,9 @@ func parseStartpageResults(body []byte, limit int) ([]sourceResult, error) {
 		}
 	}
 	walk(doc)
+	if err := checkScrapeBlocked(body, results); err != nil {
+		return nil, err
+	}
 	return results, nil
 }
 

@@ -18,8 +18,8 @@ import (
 
 func TestNewCreatesDefaultSearcher(t *testing.T) {
 	s := New(Config{})
-	if s == nil || len(s.sources) != 4 {
-		t.Fatalf("expected default searcher with 4 sources, got %#v", s)
+	if s == nil || len(s.sources) != 10 || len(s.DefaultSources()) != 6 {
+		t.Fatalf("expected 10 registered / 6 default sources, got %#v", s)
 	}
 }
 
@@ -75,9 +75,7 @@ func TestSearchRunsSourcesConcurrently(t *testing.T) {
 	}, Config{})
 
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		resp, err := s.Search(context.Background(), "test")
 		if err != nil {
 			t.Errorf("search failed: %v", err)
@@ -86,7 +84,7 @@ func TestSearchRunsSourcesConcurrently(t *testing.T) {
 		if len(resp.Results) != 2 {
 			t.Errorf("results = %d", len(resp.Results))
 		}
-	}()
+	})
 
 	first := <-started
 	second := <-started
@@ -270,7 +268,7 @@ func TestFuseDuplicateURLs(t *testing.T) {
 		{name: "brave", results: []sourceResult{{title: "Go", url: "https://Go.Dev/", snippet: "short", rank: 1}}},
 		{name: "startpage", results: []sourceResult{{title: "Go Lang", url: "https://go.dev?utm_source=test", snippet: "longer snippet", rank: 1}}},
 	}
-	results := fuseResults(outcomes, defaultSources(), 10)
+	results := fuseResults("", nil, outcomes, defaultSources(), 10)
 	if len(results) != 1 {
 		t.Fatalf("results = %#v", results)
 	}
@@ -326,8 +324,8 @@ func TestFuseDeterministicOrdering(t *testing.T) {
 		{name: "brave", results: []sourceResult{{title: "A", url: "https://a.example", rank: 1}}},
 		{name: "startpage", results: []sourceResult{{title: "B", url: "https://b.example", rank: 1}}},
 	}
-	first := fuseResults(outcomes, defaultSources(), 10)
-	second := fuseResults([]sourceOutcome{outcomes[1], outcomes[0]}, defaultSources(), 10)
+	first := fuseResults("", nil, outcomes, defaultSources(), 10)
+	second := fuseResults("", nil, []sourceOutcome{outcomes[1], outcomes[0]}, defaultSources(), 10)
 	if fmt.Sprintf("%#v", first) != fmt.Sprintf("%#v", second) {
 		t.Fatalf("ordering differed: %#v vs %#v", first, second)
 	}
@@ -338,10 +336,10 @@ func TestFuseLimitBoundaries(t *testing.T) {
 		{title: "1", url: "https://example.com/1", rank: 1},
 		{title: "2", url: "https://example.com/2", rank: 2},
 	}}}
-	if got := len(fuseResults(outcomes, defaultSources(), 1)); got != 1 {
+	if got := len(fuseResults("", nil, outcomes, defaultSources(), 1)); got != 1 {
 		t.Fatalf("limit 1 = %d", got)
 	}
-	if got := len(fuseResults(outcomes, defaultSources(), defaultLimit)); got != 2 {
+	if got := len(fuseResults("", nil, outcomes, defaultSources(), defaultLimit)); got != 2 {
 		t.Fatalf("default limit = %d", got)
 	}
 }
@@ -354,7 +352,7 @@ func TestSearchWithOptionsLimitReachesSourcesAndFusion(t *testing.T) {
 				t.Fatalf("source received limit %d, want 25", limit)
 			}
 			results := make([]sourceResult, 0, 30)
-			for i := 0; i < 30; i++ {
+			for i := range 30 {
 				results = append(results, sourceResult{
 					title: fmt.Sprintf("result-%02d", i),
 					url:   fmt.Sprintf("https://example.com/%d", i),
@@ -402,7 +400,7 @@ func TestFuseResultsNormalisesScore(t *testing.T) {
 			{title: "top", url: "https://a.example/top", rank: 5},
 		}},
 	}
-	results := fuseResults(outcomes, defaultSources(), 10)
+	results := fuseResults("", nil, outcomes, defaultSources(), 10)
 	if len(results) != 2 {
 		t.Fatalf("results = %#v", results)
 	}

@@ -2,13 +2,15 @@ package searchwire
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
 )
 
-// openCodeDefaultBaseURL is the OpenCode Zen paid lane; the free Go lane is
+// openCodeDefaultBaseURL is the OpenCode Zen lane; the Go subscription lane is
 // https://opencode.ai/zen/go/v1 — both expose the same Responses API.
 const openCodeDefaultBaseURL = "https://opencode.ai/zen/v1"
 
@@ -30,24 +32,31 @@ type openCodeAnswerTool struct {
 	Type string `json:"type"`
 }
 
-func (p openCodeAnswerProvider) answer(ctx context.Context, f *fetcher, question string) (string, error) {
+func (p openCodeAnswerProvider) answer(ctx context.Context, f *fetcher, question string) (answerResult, error) {
 	payload, err := json.Marshal(openCodeAnswerRequest{
 		Model: p.model,
 		Input: question,
 		Tools: []openCodeAnswerTool{{Type: "web_search"}},
 	})
 	if err != nil {
-		return "", fmt.Errorf("encode opencode answer request: %w", err)
+		return answerResult{}, fmt.Errorf("encode opencode answer request: %w", err)
 	}
 
-	headers := http.Header{"Authorization": []string{"Bearer " + p.apiKey}}
+	var session [16]byte
+	if _, err := rand.Read(session[:]); err != nil {
+		return answerResult{}, fmt.Errorf("create opencode session: %w", err)
+	}
+	headers := http.Header{
+		"Authorization":      []string{"Bearer " + p.apiKey},
+		"X-Opencode-Session": []string{hex.EncodeToString(session[:])},
+	}
 	body, err := f.postJSON(ctx, strings.TrimRight(p.baseURL, "/")+"/responses", payload, headers)
 	if err != nil {
-		return "", redactErrorSecret(err, p.apiKey)
+		return answerResult{}, redactErrorSecret(err, p.apiKey)
 	}
 	answer, err := parseResponsesAnswer(body, AnswerProviderOpenCode)
 	if err != nil {
-		return "", err
+		return answerResult{}, err
 	}
-	return strings.ReplaceAll(answer, p.apiKey, "[redacted]"), nil
+	return answerResult{Text: strings.ReplaceAll(answer, p.apiKey, "[redacted]"), SearchStatus: responsesSearchStatus(body)}, nil
 }

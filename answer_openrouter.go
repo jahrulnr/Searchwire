@@ -36,11 +36,18 @@ type openRouterAnswerTool struct {
 
 type openRouterAnswerResponse struct {
 	Choices []struct {
-		Message openRouterAnswerMessage `json:"message"`
+		FinishReason string `json:"finish_reason"`
+		Message      struct {
+			Content     string `json:"content"`
+			Annotations []struct {
+				Type        string       `json:"type"`
+				URLCitation answerSource `json:"url_citation"`
+			} `json:"annotations"`
+		} `json:"message"`
 	} `json:"choices"`
 }
 
-func (p openRouterAnswerProvider) answer(ctx context.Context, f *fetcher, question string) (string, error) {
+func (p openRouterAnswerProvider) answer(ctx context.Context, f *fetcher, question string) (answerResult, error) {
 	payload, err := json.Marshal(openRouterAnswerRequest{
 		Model: p.model,
 		Messages: []openRouterAnswerMessage{{
@@ -52,24 +59,50 @@ func (p openRouterAnswerProvider) answer(ctx context.Context, f *fetcher, questi
 		MaxTokens:    2048,
 	})
 	if err != nil {
-		return "", fmt.Errorf("encode openrouter answer request: %w", err)
+		return answerResult{}, fmt.Errorf("encode openrouter answer request: %w", err)
 	}
 
 	headers := http.Header{"Authorization": []string{"Bearer " + p.apiKey}}
 	body, err := f.postJSON(ctx, openRouterChatCompletionsEndpoint, payload, headers)
 	if err != nil {
-		return "", redactErrorSecret(err, p.apiKey)
+		return answerResult{}, redactErrorSecret(err, p.apiKey)
 	}
 	var response openRouterAnswerResponse
 	if err := json.Unmarshal(body, &response); err != nil {
-		return "", fmt.Errorf("%w: parse openrouter answer: %v", ErrInvalidProviderResponse, err)
+		return answerResult{}, fmt.Errorf("%w: parse openrouter answer: %v", ErrInvalidProviderResponse, err)
 	}
 	if len(response.Choices) == 0 {
-		return "", ErrInvalidProviderResponse
+		return answerResult{}, ErrInvalidProviderResponse
+	}
+	if reason := response.Choices[0].FinishReason; reason != "" && reason != "stop" {
+		return answerResult{}, fmt.Errorf("%w: openrouter finish reason %s", ErrInvalidProviderResponse, reason)
 	}
 	answer := strings.TrimSpace(response.Choices[0].Message.Content)
 	if answer == "" {
-		return "", ErrInvalidProviderResponse
+		return answerResult{}, ErrInvalidProviderResponse
 	}
-	return strings.ReplaceAll(answer, p.apiKey, "[redacted]"), nil
+	var sources []answerSource
+	for _, annotation := range response.Choices[0].Message.Annotations {
+		if annotation.Type == "url_citation" {
+			sources = append(sources, annotation.URLCitation)
+		}
+	}
+	return answerResult{Text: strings.ReplaceAll(appendAnswerSources(answer, "Sources", sources), p.apiKey, "[redacted]"), SearchStatus: openRouterSearchStatus(body)}, nil
+}
+
+func openRouterSearchStatus(body []byte) string {
+	var response struct {
+		Usage struct {
+			ServerToolUse struct {
+				WebSearchRequests *int `json:"web_search_requests"`
+			} `json:"server_tool_use"`
+		} `json:"usage"`
+	}
+	if json.Unmarshal(body, &response) != nil || response.Usage.ServerToolUse.WebSearchRequests == nil {
+		return "unknown"
+	}
+	if *response.Usage.ServerToolUse.WebSearchRequests > 0 {
+		return "observed"
+	}
+	return "not_observed"
 }

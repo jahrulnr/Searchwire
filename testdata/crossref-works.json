@@ -1,0 +1,70 @@
+{
+ "status": "ok",
+ "message-type": "work-list",
+ "message-version": "1.0.0",
+ "message": {
+  "items": [
+   {
+    "DOI": "10.21275/sr251104092705",
+    "title": [
+     "Retrieval-Augmented Generation: Enhancing AI with Reliable Knowledge."
+    ],
+    "container-title": [
+     "International Journal of Science and Research (IJSR)"
+    ],
+    "published": {
+     "date-parts": [
+      [
+       2025,
+       11,
+       8
+      ]
+     ]
+    },
+    "is-referenced-by-count": 2
+   },
+   {
+    "DOI": "10.51473/rcmos.v1i2.2024.736",
+    "title": [
+     "Prot\u00f3tipo de Pesquisa Documental para a Pol\u00edcia Militar do Paran\u00e1 com Retrieval Augmented Generation e Gemini AI em Ambiente Dockerizado",
+     "Prototype for Document Retrieval for the Military Police of Paran\u00e1 with Retrieval Augmented Generation and Gemini AI in a Dockerized Environment"
+    ],
+    "container-title": [
+     "RCMOS - Revista Cient\u00edfica Multidisciplinar O Saber"
+    ],
+    "published": {
+     "date-parts": [
+      [
+       2024,
+       11,
+       12
+      ]
+     ]
+    },
+    "is-referenced-by-count": 1,
+    "abstract": "<jats:p>Este trabalho apresenta o desenvolvimento de um prot\u00f3tipo de pesquisa documental para as diretrizes e doutrinas da Pol\u00edcia Militar do Paran\u00e1 (PMPR) utilizando a estrat\u00e9gia Retrieval Augmented Generation (RAG) e o modelo de linguagem Gemini AI Flash 1.5. O prot\u00f3tipo foi implementado em um ambiente containerizado com Docker, visando garantir portabilidade e reprodutibilidade. A estrat\u00e9gia RAG combina a busca tradicional com modelos de linguagem avan\u00e7ados para gerar respostas mais precisas e completas \u00e0s consultas dos usu\u00e1rios. O prot\u00f3tipo foi testado com perguntas reais e os resultados p"
+   },
+   {
+    "DOI": "10.36085/jsai.v9i1.9897",
+    "title": [
+     "Evaluation of Retrieval Methods in Domain-Specific Chatbots Based on Retrieval-Augmented Generation",
+     "Evaluasi Metode Retrieval pada Chatbot Domain Khusus Berbasis Retrieval-Augmented Generation"
+    ],
+    "container-title": [
+     "JSAI (Journal Scientific and Applied Informatics)"
+    ],
+    "published": {
+     "date-parts": [
+      [
+       2026,
+       1,
+       23
+      ]
+     ]
+    },
+    "is-referenced-by-count": 0,
+    "abstract": "<jats:p>This study evaluated retrieval methods in the implementation of a domain-specific chatbot based on Retrieval-Augmented Generation to improve information accuracy and relevance while reducing hallucination risks. The primary problem addressed was the incorrect selection and prioritization of contextual documents in chatbot systems built on large language models, particularly in technical domains. An experimental approach was applied by comparing three retrieval strategies: lexical retrieval based on term frequency\u2013inverse document frequency, semantic retrieval using vector representatio"
+   }
+  ]
+ }
+}

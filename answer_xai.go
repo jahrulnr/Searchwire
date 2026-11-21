@@ -28,23 +28,23 @@ type xAIAnswerMessage struct {
 	Content string `json:"content"`
 }
 
-func (p xAIAnswerProvider) answer(ctx context.Context, f *fetcher, question string) (string, error) {
+func (p xAIAnswerProvider) answer(ctx context.Context, f *fetcher, question string) (answerResult, error) {
 	payload, err := json.Marshal(xAIAnswerRequest{
 		Model: p.model,
 		Input: []xAIAnswerMessage{{Role: "user", Content: question}},
 		Tools: []openAIAnswerTool{{Type: "web_search"}},
 	})
 	if err != nil {
-		return "", fmt.Errorf("encode xai answer request: %w", err)
+		return answerResult{}, fmt.Errorf("encode xai answer request: %w", err)
 	}
 	headers := http.Header{"Authorization": []string{"Bearer " + p.apiKey}}
 	body, err := f.postJSON(ctx, xAIResponsesEndpoint, payload, headers)
 	if err != nil {
-		return "", redactErrorSecret(err, p.apiKey)
+		return answerResult{}, redactErrorSecret(err, p.apiKey)
 	}
 	answer, err := parseResponsesAnswer(body, AnswerProviderXAI)
 	if err != nil {
-		return "", err
+		return answerResult{}, err
 	}
-	return strings.ReplaceAll(answer, p.apiKey, "[redacted]"), nil
+	return answerResult{Text: strings.ReplaceAll(answer, p.apiKey, "[redacted]"), SearchStatus: responsesSearchStatus(body)}, nil
 }

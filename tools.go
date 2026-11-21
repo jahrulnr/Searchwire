@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/url"
 	"path"
 	"strings"
@@ -34,10 +35,21 @@ const (
 	ToolAnswer = "answer"
 )
 
+// toolSearchMaxLimit bounds the per-call search limit a tool caller may
+// request; larger values only add low-ranked noise and upstream load.
+const toolSearchMaxLimit = 50
+
+// toolSnippetMaxLen caps each search snippet in tool output. Some sources
+// (Wikipedia extracts, GitHub issue bodies) return whole paragraphs; a
+// snippet only has to help the caller decide what to fetch.
+const toolSnippetMaxLen = 320
+
 const (
-	searchToolDescription = "Metasearch the open web across Brave, Startpage, Wikipedia, and GitHub. " +
-		"Returns ranked results with partial failure reporting when some sources fail. " +
-		"May take up to ~10s (or the configured timeout) because sources are queried concurrently. " +
+	searchToolDescriptionFmt = "Metasearch the open web across %s. " +
+		"Returns ranked results (title, url, snippet, sources, score) with partial failure reporting " +
+		"in errors when some sources fail. score is relative to the top hit of this query (top = 1); " +
+		"more sources corroborating a hit is the stronger quality signal. " +
+		"Sources are queried concurrently, bounded by the configured timeout. " +
 		"After searching, use fetch on promising URLs for full page text."
 	fetchToolDescription = "Fetch one http(s) URL and return readable text (HTML stripped to title + visible text, " +
 		"or plain text as-is). Prefer search first, then fetch promising result URLs. " +
@@ -51,38 +63,93 @@ const (
 		"unrelated to the fetched path is reduced to its header only."
 	answerToolDescription = "Answer one question using an optional web-grounded answer provider. " +
 		"The answer is composed by the configured provider's own model. " +
+		"searchStatus reports observed search activity; not_observed or unknown does not establish grounding. " +
 		"This tool is only exposed when a provider API key is configured."
 )
 
 var (
-	searchToolSchema = json.RawMessage(`{
-		"type": "object",
-		"properties": {
-			"query": {"type": "string", "description": "the search query"},
-			"limit": {"type": "integer", "description": "optional maximum number of results"}
-		},
-		"required": ["query"],
-		"additionalProperties": false
-	}`)
 	fetchToolSchema = json.RawMessage(`{
 		"type": "object",
 		"properties": {
-			"url": {"type": "string", "description": "absolute http or https URL to fetch"},
-			"max_bytes": {"type": "integer", "description": "optional budget for the returned readable text (bytes); capped by adapter/library limit"}
+			"url": {"type": "string", "minLength": 1, "description": "absolute http or https URL to fetch"},
+			"max_bytes": {"type": "integer", "minimum": 1, "description": "optional budget for the returned readable text (bytes); capped by adapter/library limit"}
 		},
 		"required": ["url"],
 		"additionalProperties": false
 	}`)
-	answerToolSchema = json.RawMessage(`{
-		"type": "object",
-		"properties": {
-			"question": {"type": "string", "description": "the question to answer using current web information"},
-			"provider": {"type": "string", "description": "optional configured provider: brave, openrouter, openai, perplexity, anthropic, xai, omniroute, or opencode"}
-		},
-		"required": ["question"],
-		"additionalProperties": false
-	}`)
 )
+
+// answerToolSchemaFor lists only the providers this Searcher actually has
+// configured, so a caller cannot pick one that will fail as unavailable.
+func answerToolSchemaFor(providers []string) json.RawMessage {
+	provider := map[string]any{
+		"type":        "string",
+		"description": "optional provider; defaults to " + providers[0],
+		"enum":        providers,
+	}
+	schema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"question": map[string]any{"type": "string", "minLength": 1, "description": "the question to answer using current web information"},
+			"provider": provider,
+		},
+		"required":             []string{"question"},
+		"additionalProperties": false,
+	}
+	raw, _ := json.Marshal(schema)
+	return raw
+}
+
+// searchToolDescriptionFor names the default fan-out and, separately, the
+// opt-in sources a caller can request through the sources argument.
+func searchToolDescriptionFor(defaults, all []string) string {
+	names := "the configured sources"
+	if len(defaults) > 0 {
+		names = strings.Join(defaults, ", ")
+	}
+	desc := fmt.Sprintf(searchToolDescriptionFmt, names)
+	inDefault := make(map[string]bool, len(defaults))
+	for _, n := range defaults {
+		inDefault[n] = true
+	}
+	var extra []string
+	for _, n := range all {
+		if !inDefault[n] {
+			extra = append(extra, n)
+		}
+	}
+	if len(extra) > 0 {
+		desc += " Opt-in sources (" + strings.Join(extra, ", ") + ") run only when named in sources; " +
+			"use them for academic papers, e.g. sources=[\"openalex\",\"arxiv\",\"crossref\"]. " +
+			"Scholarly hits link to the DOI and their snippet starts with [year · venue · citations · open-access PDF]."
+	}
+	return desc
+}
+
+// searchToolSchemaFor builds the search schema with the registered source
+// names as the sources enum, so a caller cannot request an unknown one.
+func searchToolSchemaFor(all []string) json.RawMessage {
+	props := map[string]any{
+		"query": map[string]any{"type": "string", "minLength": 1, "description": "the search query"},
+		"limit": map[string]any{"type": "integer", "minimum": 1, "maximum": toolSearchMaxLimit,
+			"description": "optional maximum number of results (default: configured limit, max 50)"},
+	}
+	if len(all) > 0 {
+		props["sources"] = map[string]any{
+			"type":        "array",
+			"items":       map[string]any{"type": "string"},
+			"uniqueItems": true,
+			"description": "optional: query only these sources (in parallel) instead of the default set; may include opt-in sources. Available: " + strings.Join(all, ", ") + ". Unknown names are ignored with a warning.",
+		}
+	}
+	raw, _ := json.Marshal(map[string]any{
+		"type":                 "object",
+		"properties":           props,
+		"required":             []string{"query"},
+		"additionalProperties": false,
+	})
+	return raw
+}
 
 // ToolDef is a provider-agnostic tool contract: name, description, JSON
 // Schema for the arguments, and a runner that accepts JSON-encoded arguments
@@ -107,8 +174,8 @@ func (s *Searcher) Tools() []ToolDef {
 	tools := []ToolDef{
 		{
 			Name:        ToolSearch,
-			Description: searchToolDescription,
-			InputSchema: searchToolSchema,
+			Description: searchToolDescriptionFor(s.DefaultSources(), s.Sources()),
+			InputSchema: searchToolSchemaFor(s.Sources()),
 			Run:         s.runSearchTool,
 		},
 		{
@@ -122,7 +189,7 @@ func (s *Searcher) Tools() []ToolDef {
 		tools = append(tools, ToolDef{
 			Name:        ToolAnswer,
 			Description: answerToolDescription,
-			InputSchema: answerToolSchema,
+			InputSchema: answerToolSchemaFor(s.AvailableAnswerProviders()),
 			Run:         s.runAnswerTool,
 		})
 	}
@@ -130,14 +197,62 @@ func (s *Searcher) Tools() []ToolDef {
 }
 
 type toolSearchArgs struct {
-	Query string `json:"query"`
-	Limit int    `json:"limit"`
+	Query   string   `json:"query"`
+	Limit   int      `json:"limit"`
+	Sources []string `json:"sources"`
 }
 
+// Tool output uses camelCase keys throughout; the library's Result,
+// SourceError, and Link types carry no JSON tags, so they are mapped to
+// tagged mirrors here rather than serialized with Go field names.
 type toolSearchOutput struct {
-	Query   string        `json:"query"`
-	Results []Result      `json:"results"`
-	Errors  []SourceError `json:"errors,omitempty"`
+	Query   string            `json:"query"`
+	Results []toolResult      `json:"results"`
+	Errors  []toolSourceError `json:"errors,omitempty"`
+	// Warnings reports ignored request details (e.g. unknown source names).
+	Warnings []string `json:"warnings,omitempty"`
+}
+
+type toolResult struct {
+	Title   string   `json:"title"`
+	URL     string   `json:"url"`
+	Snippet string   `json:"snippet,omitempty"`
+	Sources []string `json:"sources"`
+	Score   float64  `json:"score"`
+}
+
+type toolSourceError struct {
+	Source string `json:"source"`
+	Error  string `json:"error"`
+}
+
+type toolLink struct {
+	Text string `json:"text,omitempty"`
+	Href string `json:"href"`
+}
+
+// marshalTool encodes a tool result compactly: indentation roughly doubles
+// the whitespace a model must read for no information gain.
+func marshalTool(v any) (json.RawMessage, error) {
+	return json.Marshal(v)
+}
+
+// truncateSnippet caps text at max bytes on a word boundary when one is
+// reasonably close, appending an ellipsis.
+func truncateSnippet(text string, max int) string {
+	if max <= 0 || len(text) <= max {
+		return text
+	}
+	const ellipsis = "…"
+	if max <= len(ellipsis) {
+		cut, _ := truncateRunes(text, int64(max))
+		return cut
+	}
+	cut, _ := truncateRunes(text, int64(max-len(ellipsis)))
+	if i := strings.LastIndexByte(cut, ' '); i > max*3/4 {
+		cut = cut[:i]
+	}
+	return strings.TrimRight(cut, " ,;:.-") + ellipsis
 }
 
 func (s *Searcher) runSearchTool(ctx context.Context, argsJSON json.RawMessage) (json.RawMessage, error) {
@@ -145,7 +260,10 @@ func (s *Searcher) runSearchTool(ctx context.Context, argsJSON json.RawMessage) 
 	if err := json.Unmarshal(argsJSON, &args); err != nil {
 		return nil, fmt.Errorf("decode search arguments: %w", err)
 	}
-	resp, err := s.SearchWithOptions(ctx, args.Query, SearchOptions{Limit: args.Limit})
+	if args.Limit > toolSearchMaxLimit {
+		args.Limit = toolSearchMaxLimit
+	}
+	resp, err := s.SearchWithOptions(ctx, args.Query, SearchOptions{Limit: args.Limit, Sources: args.Sources})
 	if err != nil {
 		var searchErr *SearchError
 		if errors.As(err, &searchErr) {
@@ -157,11 +275,22 @@ func (s *Searcher) runSearchTool(ctx context.Context, argsJSON json.RawMessage) 
 		}
 		return nil, s.sanitizeToolError(err)
 	}
-	errs := resp.Errors
-	for i, e := range errs {
-		errs[i].Error = s.sanitizeToolErrorText(e.Error)
+	out := toolSearchOutput{Query: resp.Query, Results: make([]toolResult, len(resp.Results)), Warnings: resp.Warnings}
+	for i, r := range resp.Results {
+		out.Results[i] = toolResult{
+			Title:   r.Title,
+			URL:     r.URL,
+			Snippet: truncateSnippet(r.Snippet, toolSnippetMaxLen),
+			Sources: r.Sources,
+			// Three decimals keep the ordering signal without echoing
+			// float noise like 0.9838709677419354.
+			Score: math.Round(r.Score*1000) / 1000,
+		}
 	}
-	return json.MarshalIndent(toolSearchOutput{Query: resp.Query, Results: resp.Results, Errors: errs}, "", "  ")
+	for _, e := range resp.Errors {
+		out.Errors = append(out.Errors, toolSourceError{Source: e.Source, Error: s.sanitizeToolErrorText(e.Error)})
+	}
+	return marshalTool(out)
 }
 
 type toolFetchArgs struct {
@@ -176,7 +305,7 @@ type toolFetchOutput struct {
 	ContentType string            `json:"contentType,omitempty"`
 	Title       string            `json:"title,omitempty"`
 	Text        string            `json:"text"`
-	Links       []Link            `json:"links,omitempty"`
+	Links       []toolLink        `json:"links,omitempty"`
 	Headers     map[string]string `json:"headers,omitempty"`
 	Redirects   int               `json:"redirects,omitempty"`
 	Truncated   bool              `json:"truncated"`
@@ -201,8 +330,6 @@ type toolFetchOutput struct {
 
 type toolLLMsTxtOutput struct {
 	URL         string               `json:"url"`
-	FinalURL    string               `json:"finalUrl,omitempty"`
-	StatusCode  int                  `json:"statusCode"`
 	Title       string               `json:"title"`
 	Summary     string               `json:"summary,omitempty"`
 	Description string               `json:"description,omitempty"`
@@ -253,17 +380,21 @@ func (s *Searcher) runFetchTool(ctx context.Context, argsJSON json.RawMessage) (
 		MarkdownAltUsed: result.MarkdownAltUsed,
 		TempFile:        result.TempFile,
 	}
-	if len(result.Links) > toolFetchMaxLinks {
-		out.Links = result.Links[:toolFetchMaxLinks]
-		out.LinksOmitted = len(result.Links) - toolFetchMaxLinks
-	} else {
-		out.Links = result.Links
+	links := result.Links
+	if len(links) > toolFetchMaxLinks {
+		out.LinksOmitted = len(links) - toolFetchMaxLinks
+		links = links[:toolFetchMaxLinks]
+	}
+	for _, l := range links {
+		text := l.Text
+		if text == l.Href {
+			text = ""
+		}
+		out.Links = append(out.Links, toolLink{Text: text, Href: l.Href})
 	}
 	if result.LLMsTxt != nil {
 		llms := toolLLMsTxtOutput{
 			URL:         result.LLMsTxtURL,
-			FinalURL:    result.LLMsTxtURL,
-			StatusCode:  result.StatusCode,
 			Title:       result.LLMsTxt.Title,
 			Summary:     result.LLMsTxt.Summary,
 			Description: result.LLMsTxt.Description,
@@ -289,7 +420,7 @@ func (s *Searcher) runFetchTool(ctx context.Context, argsJSON json.RawMessage) (
 		}
 		out.LLMsTxt = &llms
 	}
-	return json.MarshalIndent(out, "", "  ")
+	return marshalTool(out)
 }
 
 // scopedLLMsTxtSections decides which llms.txt sections to echo for a
@@ -340,9 +471,10 @@ type toolAnswerArgs struct {
 }
 
 type toolAnswerOutput struct {
-	Question string `json:"question"`
-	Answer   string `json:"answer"`
-	Provider string `json:"provider"`
+	Question     string `json:"question"`
+	Answer       string `json:"answer"`
+	Provider     string `json:"provider"`
+	SearchStatus string `json:"searchStatus"`
 }
 
 // sanitizeToolError redacts every configured credential from an error while
@@ -393,5 +525,5 @@ func (s *Searcher) runAnswerTool(ctx context.Context, argsJSON json.RawMessage) 
 	if err != nil {
 		return nil, s.sanitizeToolError(err)
 	}
-	return json.MarshalIndent(toolAnswerOutput{Question: answer.Question, Answer: answer.Text, Provider: answer.Provider}, "", "  ")
+	return marshalTool(toolAnswerOutput{Question: answer.Question, Answer: answer.Text, Provider: answer.Provider, SearchStatus: answer.SearchStatus})
 }

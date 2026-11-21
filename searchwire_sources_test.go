@@ -2,7 +2,6 @@ package searchwire
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -63,15 +62,15 @@ func TestSearchWithOptionsSourcesFilterPartial(t *testing.T) {
 }
 
 // TestSearchWithOptionsSourcesFilterOnlyUnknown verifies a restriction to
-// only unknown names behaves like a fan-out with no sources: a SearchError.
+// only unknown names falls back to the default sources with a warning
+// instead of failing the search.
 func TestSearchWithOptionsSourcesFilterOnlyUnknown(t *testing.T) {
 	s := newSearcherWithSources([]source{
 		fakeSource{nameValue: "a", searchFn: okSource("https://example.com/a")},
 	}, Config{})
-	_, err := s.SearchWithOptions(context.Background(), "test", SearchOptions{Sources: []string{"nope"}})
-	var searchErr *SearchError
-	if !errors.As(err, &searchErr) {
-		t.Fatalf("err = %v", err)
+	resp, err := s.SearchWithOptions(context.Background(), "test", SearchOptions{Sources: []string{"nope"}})
+	if err != nil || len(resp.Results) != 1 || len(resp.Warnings) != 1 {
+		t.Fatalf("resp = %+v err = %v", resp, err)
 	}
 }
 

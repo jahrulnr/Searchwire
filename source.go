@@ -122,6 +122,29 @@ func (f *fetcher) getGitHub(ctx context.Context, rawURL, token string) ([]byte, 
 	return body, nil
 }
 
+// challengeMarkers are lowercase substrings that identify bot-challenge /
+// CAPTCHA interstitials served in place of a results page.
+var challengeMarkers = []string{
+	"anubis_challenge", "captcha", "cf-challenge", "challenge-platform",
+	"cf_chl_", "are you a robot", "unusual traffic",
+}
+
+// checkScrapeBlocked turns a results page that parsed to nothing into an
+// explicit error when it is a bot challenge, so the source shows up in
+// Response.Errors instead of silently contributing zero hits.
+func checkScrapeBlocked(body []byte, results []sourceResult) error {
+	if len(results) > 0 {
+		return nil
+	}
+	lower := strings.ToLower(string(body))
+	for _, marker := range challengeMarkers {
+		if strings.Contains(lower, marker) {
+			return ErrSourceBlocked
+		}
+	}
+	return nil
+}
+
 func validateContentType(header string, allowed []string) error {
 	if len(allowed) == 0 || strings.TrimSpace(header) == "" {
 		return nil

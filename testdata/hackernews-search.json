@@ -1,0 +1,6 @@
+{"hits":[
+{"objectID":"22150395","title":"Make resilient Go servers using timeouts, deadlines and context cancellation","url":"https://ieftimov.com/post/make-resilient-golang-net-http-servers","points":229,"num_comments":40,"created_at":"2020-01-26T04:31:47Z"},
+{"objectID":"21975140","title":"Resilient Go net/HTTP servers using timeouts, deadlines and context cancellation","url":"https://ieftimov.com/post/make-resilient-golang-net-http-servers","points":3,"num_comments":0,"created_at":"2020-01-07T00:11:15Z"},
+{"objectID":"15131877","title":"Ask HN: Is context for cancellation?","url":null,"points":12,"num_comments":5,"created_at":"2017-08-30T13:19:11Z","story_text":"<p>Dave Cheney says &quot;no&quot;.</p>"},
+{"objectID":"","title":"broken","url":"https://example.com/x","points":1,"num_comments":0}
+],"nbHits":4}

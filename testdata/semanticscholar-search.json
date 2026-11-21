@@ -1,0 +1,4 @@
+{"total":2,"offset":0,"data":[
+{"paperId":"abc","title":"Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks","url":"https://www.semanticscholar.org/paper/abc","abstract":"Large pre-trained language models have been shown to store factual knowledge.","year":2020,"venue":"Neural Information Processing Systems","citationCount":5000,"externalIds":{"ArXiv":"2005.11401","DOI":"10.48550/arXiv.2005.11401"},"tldr":{"model":"tldr@v2.0.0","text":"A general-purpose fine-tuning recipe for RAG models."},"openAccessPdf":{"url":"https://arxiv.org/pdf/2005.11401","status":"GREEN"}},
+{"paperId":"def","title":"No DOI paper","url":"https://www.semanticscholar.org/paper/def","abstract":null,"year":2023,"venue":"","citationCount":3,"externalIds":{"CorpusId":1},"tldr":null,"openAccessPdf":null}
+]}

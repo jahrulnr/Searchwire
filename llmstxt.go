@@ -76,7 +76,7 @@ func ParseLLMsTxt(content string) (*LLMsTxt, error) {
 	var summary []string
 	seenTitle := false
 
-	for _, raw := range strings.Split(content, "\n") {
+	for raw := range strings.SplitSeq(content, "\n") {
 		line := strings.TrimSpace(strings.TrimSuffix(raw, "\r"))
 		if line == "" {
 			continue
@@ -430,7 +430,7 @@ func findLinkHeader(linkHeaders []string, wantRel, wantType string) string {
 				continue
 			}
 			rel, typ := "", ""
-			for _, param := range strings.Split(params, ";") {
+			for param := range strings.SplitSeq(params, ";") {
 				param = strings.TrimSpace(param)
 				if param == "" {
 					continue
@@ -487,7 +487,7 @@ func splitLinkHeader(header string) []string {
 // tokenListContains reports whether a whitespace-separated token list (such
 // as a rel attribute or parameter) contains tok.
 func tokenListContains(list, tok string) bool {
-	for _, part := range strings.Fields(list) {
+	for part := range strings.FieldsSeq(list) {
 		if part == tok {
 			return true
 		}

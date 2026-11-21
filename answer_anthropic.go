@@ -26,7 +26,7 @@ type anthropicAnswerRequest struct {
 
 type anthropicAnswerMessage struct {
 	Role    string `json:"role"`
-	Content string `json:"content"`
+	Content any    `json:"content"`
 }
 
 type anthropicAnswerTool struct {
@@ -36,75 +36,87 @@ type anthropicAnswerTool struct {
 }
 
 type anthropicAnswerResponse struct {
-	StopReason string `json:"stop_reason"`
-	Content    []struct {
-		Type      string `json:"type"`
-		Text      string `json:"text"`
-		Citations []struct {
-			URL   string `json:"url"`
-			Title string `json:"title"`
-		} `json:"citations"`
-	} `json:"content"`
+	StopReason string          `json:"stop_reason"`
+	Content    json.RawMessage `json:"content"`
 }
 
-func (p anthropicAnswerProvider) answer(ctx context.Context, f *fetcher, question string) (string, error) {
-	payload, err := json.Marshal(anthropicAnswerRequest{
+type anthropicAnswerContent struct {
+	Type      string          `json:"type"`
+	Name      string          `json:"name"`
+	Text      string          `json:"text"`
+	Content   json.RawMessage `json:"content"`
+	Citations []answerSource  `json:"citations"`
+}
+
+func (p anthropicAnswerProvider) answer(ctx context.Context, f *fetcher, question string) (answerResult, error) {
+	request := anthropicAnswerRequest{
 		Model:     p.model,
 		MaxTokens: 2048,
 		Messages:  []anthropicAnswerMessage{{Role: "user", Content: question}},
 		Tools:     []anthropicAnswerTool{{Type: "web_search_20250305", Name: "web_search", MaxUses: 1}},
-	})
-	if err != nil {
-		return "", fmt.Errorf("encode anthropic answer request: %w", err)
 	}
-
 	headers := http.Header{
 		"X-Api-Key":         []string{p.apiKey},
 		"Anthropic-Version": []string{"2023-06-01"},
 	}
-	body, err := f.postJSON(ctx, anthropicMessagesEndpoint, payload, headers)
-	if err != nil {
-		return "", redactErrorSecret(err, p.apiKey)
-	}
-	var response anthropicAnswerResponse
-	if err := json.Unmarshal(body, &response); err != nil {
-		return "", fmt.Errorf("%w: parse anthropic answer: %v", ErrInvalidProviderResponse, err)
-	}
-	if response.StopReason != "end_turn" {
-		return "", ErrInvalidProviderResponse
-	}
-	parts := make([]string, 0, 2)
-	sources := make([]string, 0, 4)
-	seenSources := make(map[string]struct{})
-	for _, content := range response.Content {
-		if content.Type != "text" || strings.TrimSpace(content.Text) == "" {
-			continue
+	var parts []string
+	var sources []answerSource
+	searchStatus := "not_observed"
+	// Bound repeated server pauses; the original context controls cancellation.
+	const maxContinuations = 3
+	for continuation := 0; continuation <= maxContinuations; continuation++ {
+		payload, err := json.Marshal(request)
+		if err != nil {
+			return answerResult{}, fmt.Errorf("encode anthropic answer request: %w", err)
 		}
-		parts = append(parts, strings.TrimSpace(content.Text))
-		for _, citation := range content.Citations {
-			url := strings.TrimSpace(citation.URL)
-			if !isSafeResultURL(url) {
-				continue
+		body, err := f.postJSON(ctx, anthropicMessagesEndpoint, payload, headers)
+		if err != nil {
+			return answerResult{}, redactErrorSecret(err, p.apiKey)
+		}
+		var response anthropicAnswerResponse
+		if err := json.Unmarshal(body, &response); err != nil {
+			return answerResult{}, fmt.Errorf("%w: parse anthropic answer: %v", ErrInvalidProviderResponse, err)
+		}
+		var content []anthropicAnswerContent
+		if err := json.Unmarshal(response.Content, &content); err != nil {
+			return answerResult{}, fmt.Errorf("%w: parse anthropic content: %v", ErrInvalidProviderResponse, err)
+		}
+		for _, block := range content {
+			if block.Type == "server_tool_use" && block.Name == "web_search" {
+				searchStatus = "observed"
 			}
-			if _, exists := seenSources[url]; exists {
-				continue
+			if block.Type == "web_search_tool_result" {
+				var result struct {
+					Type      string `json:"type"`
+					ErrorCode string `json:"error_code"`
+				}
+				if json.Unmarshal(block.Content, &result) == nil && result.Type == "web_search_tool_result_error" {
+					return answerResult{}, fmt.Errorf("%w: anthropic web search failed: %s", ErrInvalidProviderResponse, strings.ReplaceAll(result.ErrorCode, p.apiKey, "[redacted]"))
+				}
 			}
-			seenSources[url] = struct{}{}
-			title := strings.TrimSpace(citation.Title)
-			if title == "" {
-				title = url
+			if block.Type == "text" && strings.TrimSpace(block.Text) != "" {
+				parts = append(parts, strings.TrimSpace(block.Text))
+				sources = append(sources, block.Citations...)
 			}
-			sources = append(sources, "- ["+escapeMarkdownLinkText(title)+"]("+url+")")
+		}
+		switch response.StopReason {
+		case "end_turn":
+			answer := strings.TrimSpace(strings.Join(parts, "\n\n"))
+			if answer == "" {
+				return answerResult{}, ErrInvalidProviderResponse
+			}
+			return answerResult{Text: strings.ReplaceAll(appendAnswerSources(answer, "Sources", sources), p.apiKey, "[redacted]"), SearchStatus: searchStatus}, nil
+		case "pause_turn":
+			if continuation == maxContinuations {
+				return answerResult{}, fmt.Errorf("%w: anthropic continuation limit reached", ErrInvalidProviderResponse)
+			}
+			// Preserve all original blocks, including encrypted search data.
+			request.Messages = append(request.Messages, anthropicAnswerMessage{Role: "assistant", Content: response.Content})
+		default:
+			return answerResult{}, fmt.Errorf("%w: anthropic stop reason %s", ErrInvalidProviderResponse, response.StopReason)
 		}
 	}
-	if len(sources) > 0 {
-		parts = append(parts, "Sources:\n"+strings.Join(sources, "\n"))
-	}
-	answer := strings.TrimSpace(strings.Join(parts, "\n\n"))
-	if answer == "" {
-		return "", ErrInvalidProviderResponse
-	}
-	return strings.ReplaceAll(answer, p.apiKey, "[redacted]"), nil
+	return answerResult{}, ErrInvalidProviderResponse
 }
 
 func escapeMarkdownLinkText(value string) string {

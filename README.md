@@ -170,10 +170,11 @@ The same `Limit` value bounds both what each source is asked for and how many fu
 |---------|---------|----------|
 | Result limit | 10 | `Config.Limit`, `SearchOptions{Limit}` (per call), `SEARCHWIRE_LIMIT` (adapter) |
 | HTTP timeout | 10s | `Config.Timeout`, `SEARCHWIRE_TIMEOUT` (adapter) |
+| Answer HTTP timeout | 60s, or `Config.Timeout` if set | `Config.AnswerTimeout`, `SEARCHWIRE_ANSWER_TIMEOUT` (adapter) |
 | Extracted-text budget per fetch | 2 MiB | `Config.MaxResponseBytes`, `FetchOptions.MaxBytes` / `FetchWithLimit` (per call), `SEARCHWIRE_MAX_BYTES` (adapter) |
 | Raw download ceiling | 10 MiB | `Config.MaxRawResponseBytes` (safety ceiling, independent of the text budget) |
 
-Note: `Config.HTTPClient`, when provided, replaces the internally constructed client entirely — `Config.Timeout` applies only to the internal client.
+Note: `Config.HTTPClient`, when provided, replaces the internally constructed clients entirely — `Config.Timeout` and `Config.AnswerTimeout` apply only to internal clients. A caller's context can impose a shorter deadline.
 
 ### Errors
 
@@ -238,9 +239,9 @@ searchwire-mcp
 
 | Name | Input | Output |
 |------|-------|--------|
-| `search` | `{ "query": string, "limit"?: number }` | Searchwire response JSON (`query`, `results`, `errors`) |
-| `fetch` | `{ "url": string, "max_bytes"?: number }` | Page JSON (`url`, `finalUrl`, `statusCode`, `contentType`, `title`, `text`, `links`, `headers`, `redirects`, `truncated`, `bytes`, `describedBy`, `markdownAlt`, `markdownAltUsed?`, `llmsTxt?`, `tempFile?`) |
-| `answer` | `{ "question": string, "provider"?: string }` | Web-grounded answer JSON (`question`, `answer`, `provider`); registered only when an answer-provider key is available |
+| `search` | `{ "query": string, "limit"?: number (1–50), "sources"?: string[] }` | Compact JSON: `query`, `results[]` (`title`, `url`, `snippet` ≤320 bytes, `sources`, `score` rounded to 3 decimals), `errors[]` (`source`, `error`), `warnings[]` |
+| `fetch` | `{ "url": string, "max_bytes"?: number }` | Page JSON (`url`, `finalUrl`, `statusCode`, `contentType`, `title`, `text`, `links`, `headers`, `redirects`, `truncated`, `bytes`, `describedBy`, `markdownAlt`, `markdownAltUsed?`, `llmsTxt?`, `tempFile?`); `text` keeps block structure (markdown-style headings, `- ` list items, fenced `<pre>` code with indentation), `links[]` (`text`, `href`) are absolute, deduplicated, and exclude same-page anchors |
+| `answer` | `{ "question": string, "provider"?: string }` | Answer JSON (`question`, `answer`, `provider`, `searchStatus`); registered only when an answer-provider key is available |
 
 Tool names drop the `searchwire_` prefix because the MCP server name already carries it. Clients address tools as `<server-name>.<tool>` (e.g. `searchwire.search`); a prefixed tool name would be doubly redundant (`searchwire.searchwire_search`). The same applies if you mount this server under a different MCP client with its own namespace.
 
@@ -256,6 +257,13 @@ When multiple providers are configured, omit `provider` to use the stable order
 Brave → OpenRouter → OpenAI → Perplexity → Anthropic → xAI → OmniRoute →
 OpenCode, or pass a provider explicitly.
 
+`searchStatus` is `observed` when the provider response shows a search event,
+`not_observed` when no event was observed, and `unknown` when the provider
+does not expose sufficient metadata. Absence of an event is not proof that
+search did not happen. Providers may decide not to search, and observed search
+does not establish factual correctness. The answer includes separate citation
+URLs or retrieved results when available; retrieved results are labeled as such.
+
 Brave keys must have access to the Answers plan; a Search-only subscription can
 still produce a provider billing/authorization error. OpenRouter uses its
 current [`openrouter:web_search` server tool](https://openrouter.ai/docs/guides/features/server-tools/web-search)
@@ -264,6 +272,8 @@ and defaults to `openrouter/auto`. OpenAI uses the Responses API
 and defaults to the cost-focused `gpt-5.6-luna`. OpenCode uses the same
 Responses API shape against the OpenCode Zen gateway
 (`https://opencode.ai/zen/v1/responses`) and also defaults to `gpt-5.6-luna`.
+For OpenCode Go, set `OPENCODE_BASE_URL=https://opencode.ai/zen/go/v1`;
+each standalone answer sends its own session ID as required by Go.
 OmniRoute answers through the router's own `POST /v1/search` endpoint
 (default base `http://localhost:20128`, override with `OMNI_BASE_URL`); it
 returns the router's synthesized `answer` when present and otherwise composes
@@ -291,11 +301,18 @@ configuration or its env var.
 | `OMNI_SEARCH_PROVIDER` | library | Optional router-side search provider pin (e.g. `brave-search`, `tavily`) |
 | `OPENCODE_API_KEY` | library | Optional OpenCode Zen key; enables the `opencode` answer provider (falls back to `OPENCODE2_API_KEY`) |
 | `OPENCODE_MODEL` | library | OpenCode answer model (default `gpt-5.6-luna`) |
+| `OPENCODE_BASE_URL` | library | OpenCode API base; set to `https://opencode.ai/zen/go/v1` for OpenCode Go |
 | `GITHUB_TOKEN` | library | Optional GitHub API token (higher rate limits) |
+| `OPENALEX_API_KEY` | library | Optional OpenAlex key for the opt-in `openalex` source |
+| `SEMANTIC_SCHOLAR_API_KEY` | library | Semantic Scholar key; registers the opt-in `semanticscholar` source |
+| `SEARCHWIRE_EMBEDDING_MODEL` | library | Optional model2vec static embedding model directory for semantic reranking |
+| `SEARCHWIRE_DEFAULT_SOURCES` | adapter | Comma-separated sources for searches that name none (e.g. `brave,wikipedia,openalex`); unset = all non-opt-in sources |
+| `STACKEXCHANGE_API_KEY` | library | Optional Stack Exchange app key (raises the keyless ~300 requests/day quota to 10,000) |
 | `SERPER_API_KEY` | library | Optional Serper.dev API key; enables the Serper.dev source |
 | `TAVILY_API_KEY` | library | Optional Tavily API key; enables the Tavily source |
 | `SEARCHWIRE_LIMIT` | adapter | Default result limit (int; unset = library default) |
 | `SEARCHWIRE_TIMEOUT` | adapter | HTTP client timeout as a Go duration string (e.g. `10s`; unset = library default) |
+| `SEARCHWIRE_ANSWER_TIMEOUT` | adapter | Answer HTTP timeout (e.g. `60s`); overrides `SEARCHWIRE_TIMEOUT` for answers |
 | `SEARCHWIRE_MAX_BYTES` | adapter | Default fetch/response byte budget (unset = library default) |
 | `SEARCHWIRE_TEMP_DIR` | adapter | Directory used to materialize truncated fetch artifacts (default `$TMPDIR/searchwire`). The full extracted text is written here when `fetch` truncates, and surfaced to the agent as the `tempFile` field so it can read the rest with `file_read` (or framework equivalents). |
 
@@ -325,12 +342,75 @@ Searchwire fans out concurrently to:
 2. Startpage (HTML)
 3. Wikipedia MediaWiki API (JSON)
 4. GitHub Search API (repositories + issues; falls back to repositories when issues search fails)
-5. Serper.dev (Google Search API; requires SERPER_API_KEY)
-6. Tavily (AI search; requires TAVILY_API_KEY)
+5. Stack Exchange API (question/answer excerpts, Stack Overflow by default; no key required)
+6. Hacker News (Algolia HN Search API, stories; no key required)
+7. Serper.dev (Google Search API; requires SERPER_API_KEY)
+8. Tavily (AI search; requires TAVILY_API_KEY)
+
+Opt-in scholarly sources (registered, but they run only when a search names them in
+`SearchOptions.Sources` / the tool's `sources` argument, or they are listed in
+`Config.DefaultSources` / `SEARCHWIRE_DEFAULT_SOURCES`):
+
+| Source | Coverage | Key |
+|--------|----------|-----|
+| `openalex` | Multidisciplinary works, citation counts, rebuilt abstracts, open-access PDF links | Optional `OPENALEX_API_KEY` (keyless requests share a small daily budget per IP) |
+| `semanticscholar` | Multidisciplinary, strong in CS; one-sentence TL;DR snippets | Required `SEMANTIC_SCHOLAR_API_KEY` (not registered without it) |
+| `arxiv` | Preprints (CS, physics, math, ...); query terms are ANDed | None; requests are spaced 3 s apart process-wide, per arXiv's API policy |
+| `europepmc` | Life sciences, includes PubMed and preprints | None |
+| `crossref` | Journal articles only (`type:journal-article`), including many regional journals | None |
+
+Scholarly hits link to `https://doi.org/<doi>` (lowercased) whenever a DOI is known, so the
+same paper returned by several indexes fuses into one result with every index listed in
+`sources`. Their snippets start with `[year · venue · type · N citations · open-access PDF: …]`.
+
+All selected sources run concurrently, so a search takes as long as its slowest source, not
+the sum. If the caller's context deadline expires first, results from the sources that already
+answered are returned and the rest are reported in `errors` as `timed out before responding`.
 
 Source ordering is also the tie-break order when fused scores are equal.
 
+### Ranking
+
+Hits are merged by canonical URL (DOI for scholarly hits) and scored with reciprocal-rank
+fusion, so a hit several sources agree on rises. Fusion only knows positions, not content, so a
+second pass rescales each hit by **lexical query coverage**: the share of the query's terms found
+in its title (full weight) or snippet/URL (0.7), with rare terms weighted above common ones
+(IDF over the result set). Matching uses stopword removal (English + Indonesian) and a light
+stemmer, so `cancellation`, `cancelation`, and `cancelled` all meet `cancel`. An off-topic hit
+keeps 30% of its fusion score: it sinks below on-topic hits rather than being dropped.
+
+**Optional semantic reranking.** Point `Config.Embedding.ModelDir` (or
+`SEARCHWIRE_EMBEDDING_MODEL`) at a [model2vec](https://github.com/MinishLab/model2vec) static
+embedding model directory (`model.safetensors`, `tokenizer.json`, `config.json`), e.g.
+[`minishlab/potion-base-8M`](https://huggingface.co/minishlab/potion-base-8M) (MIT, ~31 MB).
+Searchwire embeds the query and each hit's title + snippet in pure Go (BERT WordPiece tokenizer,
+mean of static token vectors; ~25 ms to load, a few µs per hit, no cgo, no network) and lets
+cosine similarity fill the gap lexical matching leaves (synonyms, paraphrases):
+`coverage = lexical + (1 − lexical) × semantic`, so it can raise but never lower a lexical match.
+Nothing is downloaded automatically; if the model cannot be loaded, search continues with
+lexical relevance and every response carries a warning saying why.
+The Go tokenizer and embeddings match the reference Hugging Face `tokenizers` / `model2vec`
+output exactly (token ids and cosine 1.0) on a golden set covering CJK, Arabic, Thai, emoji,
+accents, ligatures, zero-width and control characters, and verbatim special tokens; run
+`SEARCHWIRE_EMBEDDING_MODEL=<potion-base-8M dir> go test -run GoldenParity .` to re-check.
+
+```bash
+mkdir -p ~/.cache/searchwire/potion-base-8M && cd ~/.cache/searchwire/potion-base-8M
+for f in model.safetensors tokenizer.json config.json; do
+  curl -fsSLO "https://huggingface.co/minishlab/potion-base-8M/resolve/main/$f"
+done
+export SEARCHWIRE_EMBEDDING_MODEL=~/.cache/searchwire/potion-base-8M
+```
+
+Sources with their own relevance model (Brave API, Serper, Tavily, Semantic Scholar) are exempt;
+the rescaling targets keyless scrapers and indexes. `score` stays relative to the top hit (top = 1).
+
+Unknown names in `SearchOptions.Sources` / the tool's `sources` are ignored and reported in
+`Response.Warnings` / `warnings`; if none of the requested names is registered, the default
+sources run instead.
+
 Unauthenticated GitHub search is limited to about 10 requests per minute across search endpoints.
+Keyless Stack Exchange access is limited to about 300 requests per day per IP.
 
 ## Configuration
 
@@ -390,10 +470,10 @@ under the same `brave` source name; it does not query both or double-count
 duplicate results.
 
 The same resolved key enables `Searcher.CanAnswer()` and `Searcher.Answer()`
-using Brave's blocking, single-search
+using Brave's single-search
 [Answers endpoint](https://api-dashboard.search.brave.com/documentation/services/answers).
-The initial answer contract returns provider-grounded text; streaming research
-mode and structured citation extraction are not yet exposed.
+Searchwire consumes the citation-enabled stream internally and returns completed
+text with source links. Streaming partial output and research mode are not exposed.
 
 ### LLM answer providers
 
@@ -422,6 +502,31 @@ more important than automatic routing.
 | `SearchIssues` | `true` | Repo+issues (B); `false` = repos only (A) |
 
 When `SearchIssues` is true and issues search fails, repository results are still returned.
+
+### Stack Exchange
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `Enabled` | `true` | Register the `stackexchange` source |
+| `APIKey` | — | App key sent as `key`; overrides env |
+| `APIKeyEnv` | `STACKEXCHANGE_API_KEY` | Env var for the key |
+| `Site` | `stackoverflow` | Site parameter (`serverfault`, `unix`, `math`, ...) |
+
+Uses `/2.3/search/excerpts` in relevance order. Negative-score items are dropped,
+and an answer whose question is already listed collapses into it. Snippets start
+with a `[question, score N · M answers · has accepted answer · tags: ...]` header
+so a caller can weigh community signal before fetching.
+
+### Hacker News
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `Enabled` | `true` | Register the `hackernews` source |
+
+Searches stories through the public Algolia HN Search API. Results link to the
+submitted article (Ask/Show HN text posts link to the thread); the snippet carries
+points, comment count, date, and the discussion URL. Resubmissions of the same
+URL collapse to the highest-ranked one.
 
 ### Serper.dev
 
@@ -467,7 +572,7 @@ When at least one source succeeds, `Search` returns a `*Response` with merged re
 - HTML adapters can break when source markup changes.
 - Ordinary text/web results only; no images, news, maps, or shopping categories.
 - Fetch is text-oriented (no headless browser / JS execution).
-- No CAPTCHA solving, proxy rotation, or anti-bot bypasses.
+- No CAPTCHA solving, proxy rotation, or anti-bot bypasses. When a scraped source (Brave HTML, Startpage) answers with a bot challenge, it is reported in `errors` as `source served a bot challenge instead of results` rather than silently contributing zero hits; set `BRAVE_SEARCH_API_KEY` (or Serper/Tavily) for reliable coverage.
 - Not a promise of SearXNG parity or engine compatibility.
 
 ## Development

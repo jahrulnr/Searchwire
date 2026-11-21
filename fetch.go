@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"golang.org/x/net/html"
@@ -201,6 +202,7 @@ func (s *Searcher) FetchWithOptions(ctx context.Context, rawURL string, opts Fet
 	// budget to the extracted text. This keeps small budgets useful: a 5 KB
 	// budget now yields 5 KB of real content instead of a fragment of <head>.
 	title, text, links, hints := extractFetchText(mediaType, body)
+	links = resolvePageLinks(finalURL, links)
 	// When the page advertises a markdown alternate (rel="alternate"
 	// type="text/markdown" or the Link header equivalent), prefer it: the
 	// site is explicitly publishing an LLM-friendly version, so its text
@@ -454,26 +456,68 @@ func extractHTMLPage(body []byte) (title, text string, links []Link, hints htmlP
 
 	var b strings.Builder
 	var collected []Link
+	// newline ends the current line unless the output already ends at a
+	// line start; paragraph additionally leaves one blank line. Source
+	// HTML line breaks are layout, not content, so text nodes outside
+	// <pre> are space-joined and lines come only from block structure.
+	newline := func() {
+		if b.Len() > 0 && !strings.HasSuffix(b.String(), "\n") {
+			b.WriteByte('\n')
+		}
+	}
+	paragraph := func() {
+		newline()
+		if b.Len() > 0 && !strings.HasSuffix(b.String(), "\n\n") {
+			b.WriteByte('\n')
+		}
+	}
 	var walk func(*html.Node, bool)
 	walk = func(n *html.Node, inPre bool) {
+		// closeWith runs after the children: newline for line-level
+		// blocks, paragraph for headings/paragraphs/quotes/tables.
+		var closeWith func()
 		if n.Type == html.ElementNode {
 			switch n.Data {
 			case "script", "style", "noscript", "template", "svg", "iframe",
-				"nav", "footer", "aside", "form", "dialog":
+				"nav", "footer", "aside", "form", "dialog", "title":
+				// title is reported separately; repeating it as the first
+				// line of text wastes the caller's budget.
 				return
-			case "pre", "code":
+			case "pre":
 				if !inPre {
-					if b.Len() > 0 {
-						b.WriteByte('\n')
-					}
+					paragraph()
+					b.WriteString("```\n")
 					for child := n.FirstChild; child != nil; child = child.NextSibling {
 						walk(child, true)
 					}
-					b.WriteByte('\n')
+					newline()
+					b.WriteString("```")
+					paragraph()
 					return
 				}
+			case "br":
+				if !inPre {
+					newline()
+				}
+			case "h1", "h2", "h3", "h4", "h5", "h6":
+				paragraph()
+				b.WriteString(strings.Repeat("#", int(n.Data[1]-'0')) + " ")
+				closeWith = paragraph
+			case "li":
+				newline()
+				b.WriteString("- ")
+				closeWith = newline
+			case "p", "blockquote", "table", "figure", "hr":
+				paragraph()
+				closeWith = paragraph
+			case "div", "section", "article", "main", "header", "ul", "ol", "dl",
+				"dt", "dd", "tr", "figcaption", "details", "summary", "address":
+				newline()
+				closeWith = newline
+			case "td", "th":
+				b.WriteString(" | ")
 			case "a":
-				if href := attrValue(n, "href"); isSafeResultURL(href) {
+				if href := strings.TrimSpace(attrValue(n, "href")); isFollowableHref(href) {
 					collected = append(collected, Link{Text: textContent(n), Href: href})
 				}
 			case "link":
@@ -497,17 +541,115 @@ func extractHTMLPage(body []byte) (title, text string, links []Link, hints htmlP
 			}
 		}
 		if n.Type == html.TextNode {
-			b.WriteString(n.Data)
-			if !inPre {
+			if inPre {
+				b.WriteString(n.Data)
+			} else if strings.TrimSpace(n.Data) != "" {
+				data := n.Data
+				if unicode.IsSpace(rune(data[0])) {
+					b.WriteByte(' ')
+				}
+				b.WriteString(strings.Join(strings.Fields(data), " "))
+				if unicode.IsSpace(rune(data[len(data)-1])) {
+					b.WriteByte(' ')
+				}
+			} else if n.Data != "" {
 				b.WriteByte(' ')
 			}
 		}
 		for child := n.FirstChild; child != nil; child = child.NextSibling {
 			walk(child, inPre)
 		}
+		if closeWith != nil {
+			closeWith()
+		}
 	}
 	walk(doc, false)
-	return title, collapseInlineWhitespace(b.String()), collected, hints
+	return title, normalizeExtractedText(b.String()), collected, hints
+}
+
+// normalizeExtractedText collapses whitespace within each line, keeps code
+// fences verbatim (indentation is meaningful there), and reduces blank-line
+// runs to a single blank line.
+func normalizeExtractedText(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	lines := strings.Split(s, "\n")
+	out := make([]string, 0, len(lines))
+	inFence, blank := false, false
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "```" {
+			inFence = !inFence
+			line = "```"
+		} else if inFence {
+			line = strings.TrimRight(line, " \t\r")
+		} else {
+			line = strings.Join(strings.Fields(line), " ")
+		}
+		if line == "" && !inFence {
+			if blank || len(out) == 0 {
+				continue
+			}
+			blank = true
+		} else {
+			blank = false
+		}
+		out = append(out, line)
+	}
+	return strings.TrimSpace(strings.Join(out, "\n"))
+}
+
+// isFollowableHref reports whether an anchor href is worth echoing as a
+// link: absolute http(s) or a relative reference (resolved against the
+// page URL later). Same-page fragments and non-web schemes are dropped.
+func isFollowableHref(href string) bool {
+	if href == "" || strings.HasPrefix(href, "#") {
+		return false
+	}
+	u, err := url.Parse(href)
+	if err != nil {
+		return false
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "", "http", "https":
+		return true
+	}
+	return false
+}
+
+// resolvePageLinks makes relative hrefs absolute against the page URL and
+// drops duplicates (by URL without fragment) and links back to the page
+// itself. When the same target appears several times the first non-empty
+// anchor text wins.
+func resolvePageLinks(pageURL string, links []Link) []Link {
+	if len(links) == 0 {
+		return links
+	}
+	self := stripFragment(pageURL)
+	seen := make(map[string]int, len(links))
+	out := make([]Link, 0, len(links))
+	for _, l := range links {
+		abs := resolveRef(pageURL, l.Href)
+		if !isSafeResultURL(abs) {
+			continue
+		}
+		key := stripFragment(abs)
+		if key == self {
+			continue
+		}
+		if i, ok := seen[key]; ok {
+			if out[i].Text == "" && l.Text != "" {
+				out[i].Text = l.Text
+			}
+			continue
+		}
+		seen[key] = len(out)
+		out = append(out, Link{Text: l.Text, Href: abs})
+	}
+	return out
+}
+
+func stripFragment(raw string) string {
+	before, _, _ := strings.Cut(raw, "#")
+	return before
 }
 
 // htmlTitle resolves the page title with fallbacks: <title> first, then

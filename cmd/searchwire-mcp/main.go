@@ -27,9 +27,14 @@ const (
 	maxErrorLen         = 240
 	envLimit            = "SEARCHWIRE_LIMIT"
 	envTimeout          = "SEARCHWIRE_TIMEOUT"
+	envAnswerTimeout    = "SEARCHWIRE_ANSWER_TIMEOUT"
 	envMaxBytes         = "SEARCHWIRE_MAX_BYTES"
 	envTempDir          = "SEARCHWIRE_TEMP_DIR"
+	envDefaultSources   = "SEARCHWIRE_DEFAULT_SOURCES"
 	envGitHubToken      = "GITHUB_TOKEN"
+	envStackExchangeKey = "STACKEXCHANGE_API_KEY"
+	envOpenAlexKey      = "OPENALEX_API_KEY"
+	envS2Key            = "SEMANTIC_SCHOLAR_API_KEY"
 	envBraveAPIKey      = "BRAVE_SEARCH_API_KEY"
 	envOpenRouterAPIKey = "OPENROUTER_API_KEY"
 	envOpenAIAPIKey     = "OPENAI_API_KEY"
@@ -65,7 +70,6 @@ func newServer(cfg searchwire.Config) *mcp.Server {
 		Version: moduleVersion(),
 	}, nil)
 	for _, def := range searchwire.New(cfg).Tools() {
-		def := def
 		server.AddTool(&mcp.Tool{
 			Name:        def.Name,
 			Description: def.Description,
@@ -105,6 +109,14 @@ func configFromEnv() searchwire.Config {
 			cfg.Timeout = d
 		}
 	}
+	if raw := strings.TrimSpace(os.Getenv(envAnswerTimeout)); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil || d < 0 {
+			log.Printf("searchwire-mcp: ignoring invalid %s=%q", envAnswerTimeout, raw)
+		} else if d > 0 {
+			cfg.AnswerTimeout = d
+		}
+	}
 	if raw := strings.TrimSpace(os.Getenv(envMaxBytes)); raw != "" {
 		n, err := strconv.ParseInt(raw, 10, 64)
 		if err != nil || n < 0 {
@@ -115,6 +127,13 @@ func configFromEnv() searchwire.Config {
 	}
 	if raw := strings.TrimSpace(os.Getenv(envTempDir)); raw != "" {
 		cfg.TempDir = raw
+	}
+	if raw := strings.TrimSpace(os.Getenv(envDefaultSources)); raw != "" {
+		for name := range strings.SplitSeq(raw, ",") {
+			if name = strings.TrimSpace(name); name != "" {
+				cfg.DefaultSources = append(cfg.DefaultSources, name)
+			}
+		}
 	}
 	return cfg
 }
@@ -149,6 +168,9 @@ func sanitizeError(msg string) string {
 func redactSecrets(msg string) string {
 	secrets := []string{
 		strings.TrimSpace(os.Getenv(envGitHubToken)),
+		strings.TrimSpace(os.Getenv(envStackExchangeKey)),
+		strings.TrimSpace(os.Getenv(envOpenAlexKey)),
+		strings.TrimSpace(os.Getenv(envS2Key)),
 		strings.TrimSpace(os.Getenv(envBraveAPIKey)),
 		strings.TrimSpace(os.Getenv(envOpenRouterAPIKey)),
 		strings.TrimSpace(os.Getenv(envOpenAIAPIKey)),

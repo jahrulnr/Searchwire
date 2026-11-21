@@ -3,6 +3,7 @@ package searchwire
 import (
 	"fmt"
 	"net/url"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -22,15 +23,21 @@ type fusedCandidate struct {
 	score          float64
 	sourcePriority int
 	bestRank       int
+	relevance      float64
 }
 
 var trackingParamPrefixes = []string{"utm_", "fbclid", "gclid"}
 
-func fuseResults(outcomes []sourceOutcome, sources []source, limit int) []Result {
+// fuseResults merges per-source hits by canonical URL with reciprocal-rank
+// fusion, then (when query is non-empty) rescales by lexical relevance so
+// off-topic hits from keyless sources sink. See applyRelevance.
+func fuseResults(query string, emb *staticEmbedder, outcomes []sourceOutcome, sources []source, limit int) []Result {
 	byKey := make(map[string]*fusedCandidate)
 	sourcePriority := make(map[string]int, len(sources))
+	trusted := make(map[string]bool, len(sources))
 	for i, src := range sources {
 		sourcePriority[src.name()] = i
+		trusted[src.name()] = hasTrustedRanking(src)
 	}
 
 	for _, outcome := range outcomes {
@@ -56,6 +63,10 @@ func fuseResults(outcomes []sourceOutcome, sources []source, limit int) []Result
 				continue
 			}
 			existing.score += score
+			// Prefer the https form when sources disagree on scheme.
+			if strings.HasPrefix(existing.url, "http://") && strings.HasPrefix(canonical, "https://") {
+				existing.url = canonical
+			}
 			if !containsString(existing.sources, srcName) {
 				existing.sources = appendSourceInOrder(existing.sources, srcName, sources)
 			}
@@ -76,6 +87,7 @@ func fuseResults(outcomes []sourceOutcome, sources []source, limit int) []Result
 	for _, candidate := range byKey {
 		candidates = append(candidates, candidate)
 	}
+	applyRelevance(query, emb, candidates, trusted)
 	sort.Slice(candidates, func(i, j int) bool {
 		a, b := candidates[i], candidates[j]
 		if a.score != b.score {
@@ -134,12 +146,7 @@ func appendSourceInOrder(existing []string, name string, sources []source) []str
 }
 
 func containsString(values []string, target string) bool {
-	for _, value := range values {
-		if value == target {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(values, target)
 }
 
 func canonicalURL(raw string) (key string, canonical string, err error) {
@@ -184,5 +191,11 @@ func canonicalURL(raw string) (key string, canonical string, err error) {
 	}
 
 	canonical = u.String()
-	return canonical, canonical, nil
+	// The dedup key folds scheme and a leading "www." so the http/https and
+	// www/bare variants of one page fuse into a single hit; the returned
+	// canonical URL keeps the form the source reported.
+	k := *u
+	k.Scheme = "https"
+	k.Host = strings.TrimPrefix(k.Host, "www.")
+	return k.String(), canonical, nil
 }
